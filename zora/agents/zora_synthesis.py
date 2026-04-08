@@ -123,7 +123,7 @@ def _ml_block(metrics: dict, top_features: dict) -> str:
 def _protein_block(alphafold: dict, misfold: dict | None) -> str:
     lines = [
         f"Protein: {alphafold['protein_name']} (UniProt: {alphafold.get('uniprot_id','')})",
-        f"Stability: {alphafold['stability_score']} ({alphafold['confidence']} confidence)",
+        f"Stability: {alphafold['stability_score']} ({alphafold.get('confidence_plddt', 'unknown')} confidence)",
     ]
     if misfold and misfold.get("enabled"):
         lines += [

@@ -1,4 +1,15 @@
+import ctypes
+import sys
+import os
+
+# Fix for Windows WinError 1114 with PyTorch inside FastAPI/uvicorn
+try:
+    import torch
+except Exception:
+    pass
+
 from fastapi import FastAPI
+
 from fastapi.middleware.cors import CORSMiddleware
 from routes.board import router as board_router
 from routes.ops import router as ops_router

@@ -33,11 +33,15 @@ async def _run_pipeline(
     protein_context: ProteinContext | None,
 ):
     """Background task: S1 ingest → S2 embed → S3 clean → S3.5 feature → S4 automl → S5 synthesis → narrator."""
+    # Yield control to let Uvicorn finish sending the HTTP POST response
+    await asyncio.sleep(0.5)
+    
     log = get_run_logger(run_id)
     try:
         update_run_status(run_id, status="running")
 
         # S1 — Ingest
+
         log.info("starting_ingest")
         profile = await run_ingest_agent(
             run_id=run_id,
