@@ -156,25 +156,17 @@ def _safety_block(safety: dict) -> str:
 
 # ── The three-round debate ─────────────────────────────────────────────────────
 
-def _run_debate(
-    profile: SchemaProfile,
-    clean_report: CleanReport,
-    metrics: dict,
-    top_features: dict,
-    alphafold: dict,
-    misfold: dict | None,
-    finance: dict,
-    safety: dict,
-    gnn_result: list[dict] | None,
-    rag_context: str,
-) -> tuple[str, str, str, str, str]:
-    """
-    Execute all three debate rounds.
+import asyncio
+import concurrent.futures
 
-    Returns:
-        (clinical_position, financial_position,
-         clinical_rebuttal, financial_rebuttal,
-         final_synthesis)
+_debate_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+
+def _run_debate(
+    profile, clean_report, metrics, top_features,
+    alphafold, misfold, finance, safety, gnn_result, rag_context
+):
+    """
+    3-round agentic debate — Rounds 1 & 2 run in parallel threads (2x faster).
     """
     ml_blk      = _ml_block(metrics, top_features)
     protein_blk = _protein_block(alphafold, misfold)
@@ -183,204 +175,109 @@ def _run_debate(
     safety_blk  = _safety_block(safety)
     dataset_hdr = (
         f"DATASET: {profile.filename} | "
-        f"{clean_report.rows_after} rows | "
-        f"Target: {profile.target_candidate}"
+        f"{clean_report.rows_after} rows | Target: {profile.target_candidate}"
     )
 
-    # ── Round 1a: Clinical Strategist position ────────────────────────────
-    clinical_prompt = f"""You are the Clinical Strategist in a risk assessment debate.
-Your job: argue ONLY the CLINICAL risk — what the molecular and ML evidence says about patient risk.
-Do NOT comment on financial implications — that is the Financial Auditor's role.
+    # ── Round 1: Both positions (run in parallel via threads) ─────────────
+    def clinical_pos():
+        return _call_llm(
+            role="Clinical Strategist",
+            goal="Argue the clinical risk profile from ML, protein, and network evidence.",
+            backstory="Senior clinical ML researcher. You advocate for patient safety above all.",
+            prompt=f"""{dataset_hdr}
+ML: {ml_blk}
+PROTEIN: {protein_blk}
+GNN: {gnn_blk}
+SAFETY: {safety_blk}
+RAG: {rag_context or 'None'}
+Write 3-5 sentence CLINICAL POSITION: state risk level, top biomarkers, protein interpretation, clinical action.""",
+            expected_output="3-5 sentence clinical position paper.",
+            temperature=0.3,
+        )
 
-DATA:
-{dataset_hdr}
+    def financial_pos():
+        return _call_llm(
+            role="Financial Auditor",
+            goal="Argue the financial burden and economic feasibility.",
+            backstory="Healthcare economist. You challenge over-treatment and unsustainable protocols.",
+            prompt=f"""{dataset_hdr}
+ML (brief): {ml_blk}
+FINANCE: {finance_blk}
+SAFETY: {safety_blk}
+Write 3-5 sentence FINANCIAL POSITION: state cost risk, denial analysis, waste preventability, intervention.""",
+            expected_output="3-5 sentence financial position paper.",
+            temperature=0.3,
+        )
 
-ML EVIDENCE:
-{ml_blk}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        fut_c = pool.submit(clinical_pos)
+        fut_f = pool.submit(financial_pos)
+        clinical_position  = fut_c.result()
+        financial_position = fut_f.result()
 
-PROTEIN BIOMARKER:
-{protein_blk}
+    # ── Round 2: Rebuttals (also parallel) ────────────────────────────────
+    def finance_rebuttal():
+        return _call_llm(
+            role="Financial Auditor (rebuttal)",
+            goal="Challenge financially unjustified clinical claims.",
+            backstory="Healthcare economist who challenges over-treatment.",
+            prompt=f"""Clinical Strategist said: {clinical_position}
+Your finance data: {finance_blk}
+Write 2-sentence FINANCIAL REBUTTAL: challenge one claim, propose sustainable alternative.""",
+            expected_output="2-sentence financial rebuttal.",
+            temperature=0.2,
+        )
 
-GNN PROTEIN NETWORK:
-{gnn_blk}
+    def clinical_rebuttal():
+        return _call_llm(
+            role="Clinical Strategist (rebuttal)",
+            goal="Challenge financially-driven arguments that underweight patient safety.",
+            backstory="Clinical ML researcher who defends evidence-based safety.",
+            prompt=f"""Financial Auditor said: {financial_position}
+Your evidence: {protein_blk} | {gnn_blk}
+Write 2-sentence CLINICAL REBUTTAL: defend one safety point, propose balanced approach.""",
+            expected_output="2-sentence clinical rebuttal.",
+            temperature=0.2,
+        )
 
-SAFETY FLAGS:
-{safety_blk}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        fut_cr = pool.submit(clinical_rebuttal)
+        fut_fr = pool.submit(finance_rebuttal)
+        clinical_rebuttal_txt  = fut_cr.result()
+        financial_rebuttal_txt = fut_fr.result()
 
-RAG EVIDENCE (grounding):
-{rag_context or 'No RAG context available.'}
+    # ── Round 3: Final synthesis (single call — sees all 4 positions) ─────
+    final_synthesis = _call_llm(
+        role="Chief Healthcare Analytics Synthesizer",
+        goal="Integrate debate into a final balanced clinical report.",
+        backstory="CMO with 25 years chairing clinical review boards. Balances clinical and financial realities.",
+        prompt=f"""{dataset_hdr}
 
-Write your CLINICAL POSITION (3-5 sentences):
-- State the overall clinical risk level (low/moderate/high/critical)
-- Cite the top 2-3 SHAP features as clinically meaningful biomarkers
-- Comment on protein stability and what it means for disease mechanism
-- Mention any hidden hub proteins that represent overlooked clinical risk
-- Recommend whether immediate clinical action is required and why
-""".strip()
-
-    clinical_position = _call_llm(
-        role="Clinical Strategist",
-        goal="Argue the clinical risk profile from ML, protein, and network evidence.",
-        backstory=(
-            "Senior clinical ML researcher with 15 years in precision medicine. "
-            "You interpret biomarkers, protein stability, and network centrality "
-            "as clinical signals. You advocate for patient safety above all."
-        ),
-        prompt=clinical_prompt,
-        expected_output="3-5 sentence clinical position paper stating risk level, biomarker interpretation, and clinical recommendation.",
-        temperature=0.3,
-    )
-
-    # ── Round 1b: Financial Auditor position ──────────────────────────────
-    financial_prompt = f"""You are the Financial Auditor in a risk assessment debate.
-Your job: argue ONLY the FINANCIAL and operational burden — cost, denial risk, resource allocation.
-Do NOT comment on clinical specifics — that is the Clinical Strategist's role.
-
-DATA:
-{dataset_hdr}
-
-ML EVIDENCE (brief):
-{ml_blk}
-
-FINANCIAL RISK:
-{finance_blk}
-
-SAFETY FLAGS:
-{safety_blk}
-
-Write your FINANCIAL POSITION (3-5 sentences):
-- State the overall financial risk level (low/moderate/high/critical)
-- Comment on the denial probability and what drives it
-- State the healthcare waste estimate and whether it is preventable
-- Assess whether the cohort readmission rate implies cost-ineffective care
-- Recommend specific financial interventions (pre-auth review, care coordination, etc.)
-""".strip()
-
-    financial_position = _call_llm(
-        role="Financial Auditor",
-        goal="Argue the financial burden and economic feasibility of the clinical scenario.",
-        backstory=(
-            "Healthcare economist and insurance actuary with 20 years at a major payer. "
-            "You evaluate clinical decisions through the lens of cost-effectiveness, "
-            "denial risk, and resource stewardship. You challenge over-treatment."
-        ),
-        prompt=financial_prompt,
-        expected_output="3-5 sentence financial position paper stating cost risk level, denial analysis, and economic intervention recommendation.",
-        temperature=0.3,
-    )
-
-    # ── Round 2a: Financial Auditor rebuts Clinical Strategist ────────────
-    finance_rebuttal_prompt = f"""You are the Financial Auditor. You have now read the Clinical Strategist's position.
-Challenge any points where clinical urgency is proposed WITHOUT corresponding financial justification.
-
-CLINICAL STRATEGIST'S POSITION:
-{clinical_position}
-
-YOUR FINANCIAL DATA:
-{finance_blk}
-
-Write a SHORT REBUTTAL (2-3 sentences):
-- Identify 1 specific claim in the clinical position that is financially unjustified or un-evidenced
-- Propose an alternative that balances clinical benefit with financial sustainability
-""".strip()
-
-    financial_rebuttal = _call_llm(
-        role="Financial Auditor (rebuttal)",
-        goal="Challenge financially unjustified clinical claims.",
-        backstory="Healthcare economist who challenges over-treatment and unsustainable clinical protocols.",
-        prompt=finance_rebuttal_prompt,
-        expected_output="2-3 sentence financial rebuttal challenging one clinical claim.",
-        temperature=0.2,
-    )
-
-    # ── Round 2b: Clinical Strategist rebuts Financial Auditor ────────────
-    clinical_rebuttal_prompt = f"""You are the Clinical Strategist. You have now read the Financial Auditor's position.
-Challenge any points where financial caution may compromise patient safety.
-
-FINANCIAL AUDITOR'S POSITION:
-{financial_position}
-
-YOUR CLINICAL DATA:
-{protein_blk}
-{gnn_blk}
-Safety: {safety_blk}
-
-Write a SHORT REBUTTAL (2-3 sentences):
-- Identify 1 specific financial argument that underweights patient safety or clinical urgency
-- Propose an approach that preserves both clinical integrity and financial realism
-""".strip()
-
-    clinical_rebuttal = _call_llm(
-        role="Clinical Strategist (rebuttal)",
-        goal="Challenge financially-driven arguments that underweight patient safety.",
-        backstory="Clinical ML researcher who defends evidence-based patient safety protocols.",
-        prompt=clinical_rebuttal_prompt,
-        expected_output="2-3 sentence clinical rebuttal defending patient safety.",
-        temperature=0.2,
-    )
-
-    # ── Round 3: Synthesizer final verdict ────────────────────────────────
-    synthesis_prompt = f"""You are the Chief Healthcare Analytics Synthesizer.
-You have just presided over a structured debate between the Clinical Strategist and the Financial Auditor.
-Your role: integrate all evidence and debate positions into a final, balanced clinical report.
-
-DATA SUMMARY:
-{dataset_hdr}
-
-ML MODEL: {ml_blk}
-
-CLINICAL STRATEGIST'S POSITION:
-{clinical_position}
-
-FINANCIAL AUDITOR'S POSITION:
-{financial_position}
-
-CLINICAL STRATEGIST'S REBUTTAL (to Finance):
-{clinical_rebuttal}
-
-FINANCIAL AUDITOR'S REBUTTAL (to Clinical):
-{financial_rebuttal}
+CLINICAL POSITION: {clinical_position}
+FINANCIAL POSITION: {financial_position}
+CLINICAL REBUTTAL: {clinical_rebuttal_txt}
+FINANCIAL REBUTTAL: {financial_rebuttal_txt}
 
 PROTEIN: {protein_blk}
 FINANCE: {finance_blk}
 SAFETY: {safety_blk}
 GNN: {gnn_blk}
+RAG: {rag_context or 'None'}
 
-RAG EVIDENCE:
-{rag_context or 'No external evidence available.'}
-
-Write the FINAL SYNTHESIS REPORT (6-9 sentences):
-1. Acknowledge the debate — where Clinical Strategist and Financial Auditor AGREED
-2. Acknowledge where they DISAGREED and why
-3. State the final overall risk verdict (low/moderate/high/critical) — JUSTIFY it
-4. Cite the top ML features and what they clinically mean
-5. Integrate protein stability + GNN hidden hubs into the interpretation
-6. State the financial risk with context
-7. List safety flags that require action
-8. End with a single, specific, actionable recommendation that balances both perspectives
-""".strip()
-
-    final_synthesis = _call_llm(
-        role="Chief Healthcare Analytics Synthesizer",
-        goal=(
-            "Integrate a structured clinical debate into a final balanced report "
-            "that weighs clinical urgency against financial sustainability."
-        ),
-        backstory=(
-            "Chief Medical Officer and health economist who has chaired clinical review boards "
-            "for 25 years. You synthesize adversarial expert opinions into actionable, "
-            "evidence-grounded recommendations that are defensible to both clinicians and payers."
-        ),
-        prompt=synthesis_prompt,
-        expected_output=(
-            "6-9 sentence synthesis report covering: debate consensus/disagreements, "
-            "final risk verdict with justification, ML + protein + GNN interpretation, "
-            "financial risk context, safety flags, and one actionable recommendation."
-        ),
+Write FINAL SYNTHESIS (6-9 sentences):
+1. Where Clinical & Financial AGREED
+2. Where they DISAGREED and why
+3. Final overall risk verdict (low/moderate/high/critical) — justified
+4. Top ML features + clinical meaning
+5. Protein stability + GNN hidden hubs
+6. Financial risk with context
+7. Safety flags requiring action
+8. One specific actionable recommendation balancing both views""",
+        expected_output="6-9 sentence final synthesis report with risk verdict and actionable recommendation.",
         temperature=0.2,
     )
 
-    return clinical_position, financial_position, clinical_rebuttal, financial_rebuttal, final_synthesis
+    return clinical_position, financial_position, clinical_rebuttal_txt, financial_rebuttal_txt, final_synthesis
 
 
 # ── Main agent ────────────────────────────────────────────────────────────────

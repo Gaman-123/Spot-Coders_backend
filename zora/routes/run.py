@@ -221,7 +221,7 @@ async def create_run(
     create_run_record(
         run_id=run_id,
         filename=filename,
-        filepath=filepath,
+        filepath=final_filepath,
         problem_desc=problem_desc,
         target_column=target_column,
         protein_context_json=(
