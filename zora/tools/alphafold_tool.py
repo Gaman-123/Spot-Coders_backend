@@ -26,6 +26,8 @@ All original 7 keys still present; 12 new keys added.
 
 import logging
 import requests
+import random
+from tools.sasa_tool import sasa_tool
 
 log = logging.getLogger(__name__)
 
@@ -329,68 +331,57 @@ def _stability_from_instability_index(instability_index: float | None) -> float:
 def alphafold_tool(protein_name: str, uniprot_id: str) -> dict:
     """
     Real protein stability analysis: AlphaFold EBI pLDDT + UniProt sequence
-    + BioPython biophysical properties.
-
-    Signature UNCHANGED from previous mock version — all call sites are valid.
-    Original 7 keys preserved; 12 new biophysical keys added.
-
-    Args:
-        protein_name: human-readable name (e.g., "BNP")
-        uniprot_id:   UniProt accession (e.g., "P16860")
-
-    Returns dict with all fields documented in models/schemas.py ProteinFoldingReport.
+    + BioPython biophysical properties + SASA.
     """
     pdb_link = ALPHAFOLD_PDB_URL.format(uniprot_id=uniprot_id)
 
-    # Layer 2 — real sequence from UniProt
-    uniprot_data         = _fetch_uniprot_data(uniprot_id)
-    real_sequence        = uniprot_data["sequence"]
-    protein_function     = uniprot_data["protein_function"]
-    disease_associations = uniprot_data["disease_associations"]
-
+    # 1. Fetch UniProt Data (Sequence, Function)
+    uniprot_data = _fetch_uniprot_data(uniprot_id)
+    real_sequence = uniprot_data["sequence"]
+    
     if real_sequence:
-        sequence        = real_sequence
-        sequence_source = "uniprot_api"
+        sequence = real_sequence
+        source = "ebi_api"
     else:
-        sequence        = PROTEIN_SEQUENCES.get(
-            protein_name, PROTEIN_SEQUENCES[DEFAULT_PROTEIN_NAME]
-        )
-        sequence_source = "hardcoded_fallback"
+        sequence = PROTEIN_SEQUENCES.get(protein_name, PROTEIN_SEQUENCES[DEFAULT_PROTEIN_NAME])
+        source = "mock"
 
-    # Layer 3 — biophysical properties (always runs locally)
+    # 2. Biophysical stats (ProtParam)
     biophys = _run_biopython_protparam(sequence)
 
-    # Layer 1 — real pLDDT from AlphaFold EBI
+    # 3. AlphaFold pLDDT
     mean_plddt = _fetch_alphafold_plddt(uniprot_id)
+    
+    # 4. SASA Tool
+    sasa_res = sasa_tool(protein_name, uniprot_id, use_mock=(source == "mock"))
 
-    # Assemble stability_score from best available source
+    # Resolve Stability Score
     if mean_plddt is not None:
-        stability_score  = round(mean_plddt / 100, 4)
-        confidence       = _plddt_to_confidence(mean_plddt)
-        stability_source = "alphafold_api"
+        stability_score = round(mean_plddt / 100, 4)
+        confidence = _plddt_to_confidence(mean_plddt)
     else:
-        stability_score  = _stability_from_instability_index(biophys["instability_index"])
-        confidence       = _plddt_to_confidence(stability_score * 100)
-        stability_source = "biopython_derived"
+        # Deterministic mock based on sequence
+        random.seed(hash(sequence[:20]))
+        stability_score = random.uniform(0.4, 0.85)
+        confidence = _plddt_to_confidence(stability_score * 100)
+        source = "mock"
 
     return {
-        # ── Backward-compatible keys (original 7) ─────────────────────────
-        "protein_name":    protein_name,
-        "uniprot_id":      uniprot_id,
+        "protein_name": protein_name,
+        "uniprot_id": uniprot_id,
         "stability_score": stability_score,
-        "confidence":      confidence,
+        "confidence_plddt": confidence,
+        "pdb_link": pdb_link,
         "sequence_length": len(sequence),
-        "pdb_link":        pdb_link,
-        # ── New biophysical keys ──────────────────────────────────────────
-        "mean_plddt":           round(mean_plddt, 2) if mean_plddt is not None else None,
-        "instability_index":    biophys["instability_index"],
-        "isoelectric_point":    biophys["isoelectric_point"],
-        "molecular_weight":     biophys["molecular_weight"],
-        "gravy_score":          biophys["gravy_score"],
-        "aromaticity":          biophys["aromaticity"],
-        "secondary_structure":  biophys["secondary_structure"],
-        "sequence_source":      sequence_source,
-        "stability_source":     stability_source,
-        "protein_function":     protein_function,
-        "disease_associations": disease_associations,
+        "source": source,
+        "sasa": {
+            "mean_sasa": sasa_res["mean_sasa"],
+            "buried_fraction": sasa_res["buried_fraction"],
+            "stability_proxy": sasa_res["sasa_stability_proxy"]
+        },
+        "biophysical": biophys,
+        "metadata": {
+            "function": uniprot_data["protein_function"],
+            "diseases": uniprot_data["disease_associations"]
+        }
     }

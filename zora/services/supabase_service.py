@@ -5,6 +5,14 @@ OPTIONAL_RUN_FIELDS = {
     "protein_context_json",
     "protein_summary_json",
     "feature_summary",
+    "rows_count",
+    "cols_count",
+    "schema_json",
+    "cleaned_rows",
+    "quality_score",
+    "cleaning_summary",
+    "completed_at",
+    "mode",
 }
 OPTIONAL_INSIGHT_FIELDS = {
     "protein_summary_json",
@@ -12,6 +20,7 @@ OPTIONAL_INSIGHT_FIELDS = {
     "patient_report_text",
     "final_prescription_text",
     "report_status",
+    "gnn_summary_json",
 }
 
 

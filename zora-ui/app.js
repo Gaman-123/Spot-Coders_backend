@@ -39,9 +39,31 @@ fileInput.onchange = () => updateDropZoneText();
 
 function updateDropZoneText() {
     if (fileInput.files.length > 0) {
-        dropZone.querySelector('p').textContent = `File selected: ${fileInput.files[0].name}`;
+        document.getElementById('drop-text').textContent = `File selected: ${fileInput.files[0].name}`;
     }
 }
+
+// Mode Toggle Handler
+const modeRadios = document.getElementsByName('run-mode');
+const extraFilesSection = document.getElementById('extra-files-section');
+const targetColumnGroup = document.querySelector('.form-group');
+
+function updateModeVisibility() {
+    const mode = Array.from(modeRadios).find(r => r.checked).value;
+    if (mode === 'pipeline') {
+        dropZone.style.display = 'none';
+        extraFilesSection.style.display = 'none';
+        targetColumnGroup.style.display = 'none';
+        logToConsole('Pipeline mode selected: System will fetch latest DE dataset automatically.', 'system');
+    } else {
+        dropZone.style.display = 'block';
+        extraFilesSection.style.display = 'flex';
+        targetColumnGroup.style.display = 'block';
+    }
+}
+
+modeRadios.forEach(r => r.onchange = updateModeVisibility);
+updateModeVisibility();
 
 // --- Console Log Helper ---
 function logToConsole(message, type = 'system') {
@@ -85,12 +107,9 @@ function connectSSE(runId) {
 }
 
 // --- Fetch Results ---
-async function fetchResults(runId) {
     try {
         const res = await fetch(`${API_BASE}/api/run/${runId}/status`);
         const data = await res.json();
-        // The narrator stores the final summary in synthesis or similar fields depending on backend logic
-        // For simplicity, we just display the final state
         resultsContent.innerHTML = `
             <div class="result-box">
                 <p><strong>Status:</strong> ${data.status}</p>
@@ -105,8 +124,10 @@ async function fetchResults(runId) {
 
 // --- Run Pipeline ---
 runBtn.onclick = async () => {
-    if (fileInput.files.length === 0) {
-        alert('Please select a file first.');
+    const mode = Array.from(modeRadios).find(r => r.checked).value;
+    
+    if (mode === 'upload' && fileInput.files.length === 0 && !document.getElementById('fasta-input').files.length && !document.getElementById('pdf-input').files.length) {
+        alert('Please select at least one file for manual upload.');
         return;
     }
 
@@ -117,8 +138,16 @@ runBtn.onclick = async () => {
     logToConsole('Starting Zora Intelligence Pipeline...', 'system');
 
     const formData = new FormData();
-    formData.append('file', fileInput.files[0]);
-    formData.append('target_column', document.getElementById('target-column').value);
+    formData.append('mode', mode);
+    
+    if (mode === 'upload') {
+        if (fileInput.files[0]) formData.append('file', fileInput.files[0]);
+        const fasta = document.getElementById('fasta-input').files[0];
+        const pdf = document.getElementById('pdf-input').files[0];
+        if (fasta) formData.append('fasta_file', fasta);
+        if (pdf) formData.append('pdf_file', pdf);
+        formData.append('target_column', document.getElementById('target-column').value);
+    }
 
     try {
         const response = await fetch(`${API_BASE}/api/run`, {
@@ -130,7 +159,7 @@ runBtn.onclick = async () => {
 
         const result = await response.json();
         runIdDisplay.textContent = `Run ID: ${result.run_id}`;
-        logToConsole(`Run queued successfully. ID: ${result.run_id}`, 'success');
+        logToConsole(`Run queued successfully. Mode: ${result.mode || mode}. ID: ${result.run_id}`, 'success');
         
         connectSSE(result.run_id);
     } catch (e) {

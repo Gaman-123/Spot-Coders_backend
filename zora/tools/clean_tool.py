@@ -59,13 +59,30 @@ def clean_tool(
     _parse_datetime_columns(df, datetime_cols)
 
     df_before_dedup = len(df)
-    df = df.drop_duplicates()
-    dupes_removed = df_before_dedup - len(df)
+    # 1. Deduplication by Patient ID if detectable
+    patient_id_col = None
+    if "patient_id" in df.columns:
+        patient_id_col = "patient_id"
+    else:
+        # Heuristic: first column with 'id' in it
+        for c in df.columns:
+            if "id" in c.lower() and c != target_col:
+                patient_id_col = c
+                break
+    
+    if patient_id_col:
+        before_dedup = len(df)
+        df = df.drop_duplicates(subset=[patient_id_col])
+        dupes_removed = before_dedup - len(df)
+    else:
+        before_dedup = len(df)
+        df = df.drop_duplicates()
+        dupes_removed = before_dedup - len(df)
 
     same_visit_dupes_removed = 0
-    if {"patient_id", "admission_date"}.issubset(df.columns):
+    if patient_id_col and "admission_date" in df.columns:
         before_same_visit = len(df)
-        df = df.drop_duplicates(subset=["patient_id", "admission_date"], keep="first")
+        df = df.drop_duplicates(subset=[patient_id_col, "admission_date"], keep="first")
         same_visit_dupes_removed = before_same_visit - len(df)
 
     invalid_values_converted = _apply_plausibility_checks(df, target_col)
@@ -107,7 +124,7 @@ def clean_tool(
         else:
             imputation_strategy[col] = "skipped"
 
-    capped_extremes = _cap_extremes(df, numeric_predictors)
+    outliers_removed = _remove_iqr_outliers(df, numeric_predictors)
 
     rows_after = len(df)
 
@@ -122,11 +139,11 @@ def clean_tool(
         dupes_removed=dupes_removed,
         same_visit_dupes_removed=same_visit_dupes_removed,
         nulls_imputed=nulls_imputed,
-        outliers_removed={},
+        outliers_removed=outliers_removed,
         imputation_strategy=imputation_strategy,
         invalid_values_converted=invalid_values_converted,
-        capped_extremes=capped_extremes,
         missingness_flags_added=missingness_flags_added,
+        sample_5_rows=df.head(5).to_dict(orient="records")
     )
 
 
@@ -194,32 +211,29 @@ def _numeric_predictor_columns(
     return numeric_cols
 
 
-def _cap_extremes(df: pd.DataFrame, numeric_predictors: list[str]) -> dict[str, int]:
-    capped_extremes: dict[str, int] = {}
-
-    if len(df) < 20:
-        for col in numeric_predictors:
-            df[f"{col}_extreme_flag"] = 0
-            capped_extremes[col] = 0
-        return capped_extremes
+def _remove_iqr_outliers(df: pd.DataFrame, numeric_predictors: list[str]) -> dict[str, int]:
+    """
+    Stricter IQR outlier removal (1.5x IQR fence) as requested.
+    Returns count of rows removed per column.
+    """
+    outliers_removed: dict[str, int] = {}
+    
+    if len(df) < 20: 
+        return outliers_removed
 
     for col in numeric_predictors:
-        series = pd.to_numeric(df[col], errors="coerce")
-        if series.nunique(dropna=True) <= 1:
-            df[f"{col}_extreme_flag"] = 0
-            capped_extremes[col] = 0
-            continue
+        Q1 = df[col].quantile(0.25)
+        Q3 = df[col].quantile(0.75)
+        IQR = Q3 - Q1
+        lower_fence = Q1 - 1.5 * IQR
+        upper_fence = Q3 + 1.5 * IQR
+        
+        # Count how many we are about to drop
+        outlier_mask = (df[col] < lower_fence) | (df[col] > upper_fence)
+        count = int(outlier_mask.sum())
+        outliers_removed[col] = count
+        
+        # Drop rows
+        df.drop(df[outlier_mask].index, inplace=True)
 
-        lower = series.quantile(0.01)
-        upper = series.quantile(0.99)
-        if pd.isna(lower) or pd.isna(upper) or lower == upper:
-            df[f"{col}_extreme_flag"] = 0
-            capped_extremes[col] = 0
-            continue
-
-        extreme_mask = series.notna() & ((series < lower) | (series > upper))
-        df[f"{col}_extreme_flag"] = extreme_mask.astype(int)
-        capped_extremes[col] = int(extreme_mask.sum())
-        df[col] = series.clip(lower=lower, upper=upper)
-
-    return capped_extremes
+    return outliers_removed

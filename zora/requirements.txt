@@ -5,7 +5,7 @@ pydantic>=2.9.0
 pydantic-settings>=2.6.0
 supabase>=2.10.0
 polars>=1.14.0
-pandas>=2.2.0
+pandas
 openpyxl>=3.1.0
 crewai>=0.80.0
 langchain>=0.3.0
@@ -17,3 +17,14 @@ structlog>=24.4.0
 biopython>=1.83
 xgboost>=2.0.0
 requests>=2.31.0
+litellm>=1.0.0
+pycaret>=3.3.2
+torch
+torch-geometric
+networkx
+pdfplumber
+scikit-learn
+matplotlib
+seaborn
+networkx
+scipy

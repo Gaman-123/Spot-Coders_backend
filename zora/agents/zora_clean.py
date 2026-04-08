@@ -172,9 +172,10 @@ ACTIONS TAKEN:
 - Imputation method used: {json.dumps(active_imputation)} (only cols that had nulls)
 - Invalid values converted to null: {json.dumps(clean_report.invalid_values_converted)}
 - Missingness flags added: {json.dumps(clean_report.missingness_flags_added)}
-- Extreme values capped via winsorization: {json.dumps(clean_report.capped_extremes)}
+- Outliers removed via 1.5x IQR rule: {json.dumps(clean_report.outliers_removed)}
 - Rows: {clean_report.rows_before} → {clean_report.rows_after}
 - Target column skipped (correct): {profile.target_candidate}
+- Sample of cleaned data (first row): {json.dumps(clean_report.sample_5_rows[0]) if clean_report.sample_5_rows else 'N/A'}
 - Columns with NO nulls were NOT imputed (strategy "none" = no action taken)
 
 {f'PRIOR FEEDBACK (retry {attempt}): {feedback_ctx}' if feedback_ctx else ''}
@@ -184,7 +185,7 @@ Score criteria:
 2. Mode imputation for categorical null columns = good (score up)
 3. Deduplication = always correct (score up)
 4. Converting implausible vitals/labs to null with flags = good (score up)
-5. Capping extremes instead of dropping rows = good for clinical preservation
+5. Dropping outliers via IQR instead of just capping = good for strict statistical integrity
 5. Target column untouched = correct (score up)
 
 Return ONLY valid JSON: {{"score": <int 0-10>, "passed": <bool>, "feedback": <str>}}
@@ -247,7 +248,7 @@ Return ONLY valid JSON: {{"score": <int 0-10>, "passed": <bool>, "feedback": <st
             f"{clean_report.dupes_removed + clean_report.same_visit_dupes_removed} dupes removed. "
             f"{sum(clean_report.nulls_imputed.values())} nulls imputed. "
             f"{sum(clean_report.invalid_values_converted.values())} invalid values nulled. "
-            f"{sum(clean_report.capped_extremes.values())} extremes capped. "
+            f"{sum(clean_report.outliers_removed.values())} IQR outliers removed. "
             f"Quality score: {clean_report.quality_score}/10."
         ),
         "data": {

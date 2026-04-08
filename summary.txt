@@ -1,0 +1,23 @@
+# Zora ML — Project Summary
+
+1. Project Overview
+Zora is an autonomous, multi-agent healthcare analytics system. It accepts patient datasets (CSV/JSON/XLSX) and runs them through a comprehensive 6-stage machine-learning pipeline to extract medical insights.
+
+2. Architecture & Pipeline
+The backend is built with Python 3.10 and FastAPI, utilizing CrewAI for orchestrating multiple smart agents. The pipeline consists of 6 stages:
+- Stage 1 (Ingest): Parses the data using Polars and uses an LLM to generate a schema profile.
+- Stage 2 (Embed): Contextualizes the dataset using Gemini's embedding models and saves the vectors to a Supabase pgvector database for RAG (Retrieval-Augmented Generation).
+- Stage 3 (Clean): Cleans the dataset (dedup, imputation, IQR outlier removal) using Pandas, reviewed by an LLM critic for data quality.
+- Stage 4 (AutoML): Uses PyCaret to automatically train, compare, and select the best Machine Learning classification model, generating SHAP feature importances. Also includes an AlphaFold mock to simulate protein biomarker stability.
+- Stage 5 (Synthesis): Generates financial risk indicators (denial probability and waste estimate), applies a deterministic "Safety Vault" with hard-coded medical rules, and grounds its findings using RAG.
+- Stage 6 (Narrator): Translates the insights into two distinct voices (dense clinical narration and plain-English patient narration), evaluated by a final LLM critic.
+
+3. Key Technologies
+- Frameworks: FastAPI, Polars, Pandas
+- AI & ML: CrewAI, PyCaret (AutoML), Google Gemini 2.0 Flash, Groq LLaMA 3.3 (Fallback), LangChain
+- Database: Supabase (PostgreSQL with pgvector)
+- Explanability: SHAP
+- Delivery: Twilio SMS, Google Cloud TTS (Text-to-Speech)
+
+4. Frontend
+The system currently has a UI (in the zora-ui folder) using pure HTML/JS/CSS that provides a drag-and-drop interface. It connects to the FastAPI backend and uses Server-Sent Events (SSE) to stream the 6-stage AI agent interactions live to the user.

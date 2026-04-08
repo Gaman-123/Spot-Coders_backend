@@ -98,6 +98,7 @@ async def run_synthesis_agent(
     profile: SchemaProfile,
     clean_report: CleanReport,
     s4_result: dict,
+    gnn_result: list[dict] | None = None,
 ) -> dict:
 
     t0 = time.monotonic()
@@ -191,6 +192,10 @@ SAFETY FLAGS: {safety_msg}
 DOCTOR REVIEW REQUIRED: {safety['doctor_review']}
 {misfold_section}
 
+GNN NETWORK ANALYSIS:
+  {f"Identified {len([r for r in gnn_result if r.get('is_hidden_hub')])} hidden hubs." if gnn_result else "No GNN data."}
+  Top GNN Centrality Factors: {', '.join([r['protein'] for r in sorted(gnn_result, key=lambda x: x.get('centrality', 0), reverse=True)[:3]]) if gnn_result else "N/A"}
+
 SCHEMA CONTEXT (RAG):
 {rag_context}
 
@@ -218,6 +223,7 @@ Write a structured synthesis paragraph for a clinical audience.
         "safety_flags":        safety["safety_flags"],
         "doctor_review":       safety["doctor_review"],
         "protein_summary_json": misfold if misfold and misfold.get("enabled") else None,
+        "gnn_summary_json":    gnn_result,
     }
     inserted_row = insert_insight_row(insight_row)
     insight_id = inserted_row["id"] if inserted_row else None

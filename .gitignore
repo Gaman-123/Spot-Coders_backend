@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+venv311/
+.env
+.venv
+env/
+ENV/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Zora specific
+zora/uploads/
+zora/outputs/
+zora/scratch/
+zora_de/
+*.log
+
+# IDE
+.vscode/
+.idea/

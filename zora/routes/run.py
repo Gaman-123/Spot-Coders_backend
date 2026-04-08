@@ -12,9 +12,11 @@ from agents.zora_embed import run_embed_agent
 from agents.zora_clean import run_clean_agent
 from agents.zora_feature import run_feature_agent
 from agents.zora_automl import run_automl_agent
+from agents.zora_gnn import run_gnn_agent
 from agents.zora_misfold import run_misfold_agent
 from agents.zora_synthesis import run_synthesis_agent
 from agents.zora_narrator import run_narrator_agent
+from services.de_connector import fetch_latest_dataset
 from utils.sse_manager import sse_manager
 from utils.config import settings
 from utils.logger import get_run_logger
@@ -39,7 +41,7 @@ async def _run_pipeline(
         log.info("starting_ingest")
         profile = await run_ingest_agent(
             run_id=run_id,
-            filepath=filepath,
+            run_dir=os.path.dirname(filepath) if os.path.isfile(filepath) else filepath,
             target_column=target_column
         )
         log.info("ingest_complete", rows=profile.rows, cols=profile.cols)
@@ -88,6 +90,14 @@ async def _run_pipeline(
                          stuck_score=misfold_summary.stuck_score,
                          energy_state=misfold_summary.energy_state)
 
+        # S4.5 — GNN Network Analysis (New Stage)
+        log.info("starting_gnn")
+        gnn_result = await run_gnn_agent(
+            run_id=run_id,
+            automl_result=s4_result
+        )
+        log.info("gnn_complete", unique_interactors=len(gnn_result))
+
         # S5 — Synthesis (finance + safety + RAG + LLM)
         log.info("starting_synthesis")
         synthesis_result = await run_synthesis_agent(
@@ -95,6 +105,7 @@ async def _run_pipeline(
             profile=profile,
             clean_report=clean_report,
             s4_result=s4_result,
+            gnn_result=gnn_result,
         )
         log.info("synthesis_complete", insight_id=synthesis_result.get("insight_id"))
 
@@ -134,30 +145,65 @@ async def _run_pipeline(
 
 @router.post("/run", response_model=RunCreateResponse)
 async def create_run(
-    file: UploadFile = File(...),
+    file: UploadFile = File(None),
+    fasta_file: UploadFile = File(None),
+    pdf_file: UploadFile = File(None),
+    mode: str = Form("upload"),
     problem_desc: str | None = Form(None),
     target_column: str | None = Form(None),
     enable_protein_analysis: bool = Form(False),
     protein_context_json: str | None = Form(None),
 ):
-    # Validate file type
-    filename = file.filename or "upload"
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    if ext not in ("csv", "xlsx", "xls", "json"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type: .{ext}. Accepted: csv, xlsx, xls, json"
-        )
-
-    # Generate run ID and save file
     run_id = uuid.uuid4().hex[:12]
     run_dir = os.path.join(settings.UPLOAD_DIR, run_id)
     os.makedirs(run_dir, exist_ok=True)
-    filepath = os.path.join(run_dir, filename)
+    
+    final_filepath = ""
+    filename = "default_set"
 
-    content = await file.read()
-    with open(filepath, "wb") as f:
-        f.write(content)
+    if mode == "pipeline":
+        # Pull from DE pipeline via Supabase
+        pipeline_path = fetch_latest_dataset(source_name="default")
+        if not pipeline_path:
+            raise HTTPException(status_code=404, detail="No dataset found in DE pipeline")
+        
+        # In reality, we'd copy it to run_dir, but for now we'll just use it
+        final_filepath = pipeline_path
+        filename = os.path.basename(pipeline_path)
+    else:
+        # Standard upload flow
+        if not file and not fasta_file and not pdf_file:
+            raise HTTPException(status_code=400, detail="At least one file must be uploaded in upload mode")
+        
+        if file:
+            filename = file.filename or "upload.csv"
+            final_filepath = os.path.join(run_dir, filename)
+            content = await file.read()
+            with open(final_filepath, "wb") as f:
+                f.write(content)
+        
+        if fasta_file:
+            fasta_path = os.path.join(run_dir, fasta_file.filename or "input.fasta")
+            content = await fasta_file.read()
+            with open(fasta_path, "wb") as f:
+                f.write(content)
+            if not final_filepath: final_filepath = fasta_path
+            
+        if pdf_file:
+            pdf_path = os.path.join(run_dir, pdf_file.filename or "input.pdf")
+            content = await pdf_file.read()
+            with open(pdf_path, "wb") as f:
+                f.write(content)
+            if not final_filepath: final_filepath = pdf_path
+
+    # Validate file type if CSV/JSON
+    if mode == "upload" and file:
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        if ext not in ("csv", "xlsx", "xls", "json"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported main file type: .{ext}. Accepted: csv, xlsx, xls, json"
+            )
 
     protein_context: ProteinContext | None = None
     if protein_context_json:
@@ -188,7 +234,7 @@ async def create_run(
     asyncio.create_task(
         _run_pipeline(
             run_id,
-            filepath,
+            final_filepath,
             target_column,
             enable_protein_analysis,
             protein_context,
@@ -198,7 +244,8 @@ async def create_run(
     return RunCreateResponse(
         run_id=run_id,
         status="queued",
-        filename=filename
+        filename=filename,
+        mode=mode
     )
 
 

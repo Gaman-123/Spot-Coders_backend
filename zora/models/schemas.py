@@ -8,12 +8,14 @@ class RunCreateRequest(BaseModel):
     target_column: Optional[str] = None
     enable_protein_analysis: bool = False
     protein_context_json: Optional[dict] = None
+    mode: Literal["upload", "pipeline"] = "upload"
 
 
 class RunCreateResponse(BaseModel):
     run_id: str
     status: str
     filename: str
+    mode: str = "upload"
 
 
 class RunStatusResponse(BaseModel):
@@ -56,6 +58,8 @@ class SchemaProfile(BaseModel):
     null_summary: dict           # {col: pct}
     duplicate_count: int
     memory_mb: float
+    fasta_sequences: list[dict] = Field(default_factory=list) # [{id, seq}]
+    pdf_chunks: list[str] = Field(default_factory=list)
 
 
 class ProteinContext(BaseModel):
@@ -128,6 +132,7 @@ class CleanReport(BaseModel):
     quality_score: Optional[int] = None
     critic_feedback: Optional[str] = None
     passed_critic: bool = False
+    sample_5_rows: list[dict] = Field(default_factory=list)
 
 
 class FeatureEngineeringReport(BaseModel):
