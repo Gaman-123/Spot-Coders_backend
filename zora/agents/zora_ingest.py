@@ -11,7 +11,8 @@ from datetime import datetime, timezone
 import json
 import os
 from Bio import SeqIO
-import pdfplumber
+import pdfplumber  # kept for Tier 3 fallback inside med_ocr_tool
+from tools.med_ocr_tool import med_ocr_tool
 
 
 def _make_crew(llm: LLM, profile_json: str, target_hint: str | None) -> Crew:
@@ -82,8 +83,9 @@ async def run_ingest_agent(
 
     t0 = time.monotonic()
     
-    fasta_sequences = []
-    pdf_chunks = []
+    fasta_sequences: list[dict] = []
+    pdf_chunks: list[dict] = []     # structured MedOCRResult entities
+    pdf_ocr_result = None           # MedOCRResult (written back to profile)
     csv_profile = None
     
     # ── Step 1: Scan directory for all file types ──────────────────
@@ -101,17 +103,40 @@ async def run_ingest_agent(
             except Exception as e:
                 print(f"Error parsing FASTA {filename}: {e}")
 
-        # 1.2: Parse PDF
+        # 1.2: Parse PDF — tiered Med-OCR (Textract Medical → Groq LLM → raw text)
         elif ext == "pdf":
             try:
-                with pdfplumber.open(fpath) as pdf:
-                    for page in pdf.pages:
-                        text = page.extract_text()
-                        if text:
-                            # Simple chunking by paragraph
-                            pdf_chunks.extend([p.strip() for p in text.split("\n\n") if p.strip()])
+                ocr_result = med_ocr_tool(pdf_path=fpath, run_id=run_id)
+                # Store as list-of-dicts for JSON serialisation
+                pdf_chunks = [ent.model_dump() for ent in ocr_result.entities]
+                # If raw_text fallback fired, store raw chunks as minimal dicts
+                if not pdf_chunks:
+                    pdf_chunks = [
+                        {"text": c, "category": "RAW_TEXT", "confidence": 1.0}
+                        for c in ocr_result.raw_text_chunks
+                    ]
+                # Attach full OCR result to profile
+                pdf_ocr_result = ocr_result
+                print(
+                    f"[ingest] Med-OCR ({ocr_result.extraction_method}): "
+                    f"{ocr_result.entity_count} entities | "
+                    f"diagnoses={len(ocr_result.diagnoses)} "
+                    f"meds={len(ocr_result.medications)} "
+                    f"PHI={'YES' if ocr_result.phi_detected else 'no'}"
+                )
             except Exception as e:
-                print(f"Error parsing PDF {filename}: {e}")
+                print(f"[ingest] Med-OCR failed for {filename}: {e} — using raw pdfplumber")
+                try:
+                    with pdfplumber.open(fpath) as pdf_raw:
+                        for page in pdf_raw.pages:
+                            text = page.extract_text()
+                            if text:
+                                pdf_chunks.extend(
+                                    [{"text": p.strip(), "category": "RAW_TEXT", "confidence": 1.0}
+                                     for p in text.split("\n\n") if p.strip()]
+                                )
+                except Exception as inner:
+                    print(f"[ingest] pdfplumber also failed: {inner}")
         
         # 1.3: Parse CSV/Main (Polars Ingest Tool)
         elif ext in ("csv", "xlsx", "xls", "json"):
@@ -134,10 +159,30 @@ async def run_ingest_agent(
     # Attach multi-modal data
     csv_profile.fasta_sequences = fasta_sequences
     csv_profile.pdf_chunks = pdf_chunks
+    if pdf_ocr_result is not None:
+        csv_profile.pdf_ocr_result = pdf_ocr_result
 
-    # Use LLM to validate schema profile — Gemini primary, Groq fallback
+    # ── Compact schema for LLM validation (top-10 cols, no binary blobs) ──
+    compact_schema = {
+        "filename":         csv_profile.filename,
+        "rows":             csv_profile.rows,
+        "cols":             csv_profile.cols,
+        "target_candidate": csv_profile.target_candidate,
+        "columns":          csv_profile.columns[:10],
+        "numeric_columns":  csv_profile.numeric_columns[:10],
+        "categorical_cols": csv_profile.categorical_columns[:10],
+        "duplicate_count":  csv_profile.duplicate_count,
+        "fasta_count":      len(fasta_sequences),
+        "pdf_entity_count": len(pdf_chunks),
+        "pdf_diagnoses":    (pdf_ocr_result.diagnoses[:5] if pdf_ocr_result else []),
+        "pdf_medications":  (pdf_ocr_result.medications[:5] if pdf_ocr_result else []),
+        "pdf_phi_detected": (pdf_ocr_result.phi_detected if pdf_ocr_result else False),
+        "pdf_ocr_method":   (pdf_ocr_result.extraction_method if pdf_ocr_result else "none"),
+    }
+
+    # Use LLM to validate schema profile — compact JSON to minimise tokens
     validation_note = _kickoff_with_fallback(
-        profile_json=json.dumps(csv_profile.model_dump(), indent=2),
+        profile_json=json.dumps(compact_schema, indent=2),
         target_hint=target_column
     )
 
@@ -152,20 +197,37 @@ async def run_ingest_agent(
         schema_json=csv_profile.model_dump()
     )
 
+    # ── Med-OCR summary for SSE ───────────────────────────────────────────
+    ocr_summary = ""
+    if pdf_ocr_result and pdf_ocr_result.entity_count > 0:
+        ocr_summary = (
+            f" | Med-OCR [{pdf_ocr_result.extraction_method}]: "
+            f"{pdf_ocr_result.entity_count} entities, "
+            f"{len(pdf_ocr_result.diagnoses)} diagnoses, "
+            f"{len(pdf_ocr_result.medications)} medications"
+            f"{', PHI DETECTED' if pdf_ocr_result.phi_detected else ''}"
+        )
+
     await sse_manager.publish(run_id, {
         "type": "agent_update",
         "agent": "zora_ingest",
         "status": "completed",
         "latency_ms": latency_ms,
         "output_summary": (
-            f"Ingested {csv_profile.rows} rows, {len(fasta_sequences)} proteins, {len(pdf_chunks)} text chunks. "
+            f"Ingested {csv_profile.rows} rows, "
+            f"{len(fasta_sequences)} proteins, "
+            f"{len(pdf_chunks)} PDF entities{ocr_summary}. "
             f"{validation_note}"
         ),
         "data": {
-            "rows": csv_profile.rows,
-            "proteins": len(fasta_sequences),
-            "pdf_paragraphs": len(pdf_chunks),
-            "target_candidate": csv_profile.target_candidate
+            "rows":              csv_profile.rows,
+            "proteins":          len(fasta_sequences),
+            "pdf_entities":      len(pdf_chunks),
+            "pdf_diagnoses":     pdf_ocr_result.diagnoses[:5] if pdf_ocr_result else [],
+            "pdf_medications":   pdf_ocr_result.medications[:5] if pdf_ocr_result else [],
+            "pdf_phi_detected":  pdf_ocr_result.phi_detected if pdf_ocr_result else False,
+            "pdf_ocr_method":    pdf_ocr_result.extraction_method if pdf_ocr_result else "none",
+            "target_candidate":  csv_profile.target_candidate,
         },
         "timestamp": datetime.now(timezone.utc).isoformat()
     })

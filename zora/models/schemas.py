@@ -1,6 +1,36 @@
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Literal, Optional
+from typing import Literal, Optional, Any
 from datetime import datetime
+
+
+# ── Med-OCR Schemas ───────────────────────────────────────────────────────────
+
+class MedicalEntity(BaseModel):
+    """A single extracted medical entity with optional ontology codes."""
+    text: str
+    category: str          # MEDICAL_CONDITION | MEDICATION | ANATOMY | etc.
+    confidence: float = 0.0
+    icd10_code: Optional[str] = None
+    rxnorm_code: Optional[str] = None
+    snomed_code: Optional[str] = None
+    normalized_name: Optional[str] = None
+    attributes: list[dict] = Field(default_factory=list)
+    source_page: Optional[int] = None
+
+
+class MedOCRResult(BaseModel):
+    """Structured output from the Med-OCR pipeline for one PDF document."""
+    source_file: str
+    extraction_method: str  # "textract_medical" | "llm_groq" | "raw_text"
+    entity_count: int = 0
+    entities: list[MedicalEntity] = Field(default_factory=list)
+    diagnoses: list[str] = Field(default_factory=list)
+    medications: list[str] = Field(default_factory=list)
+    anatomy: list[str] = Field(default_factory=list)
+    procedures: list[str] = Field(default_factory=list)
+    lab_values: list[str] = Field(default_factory=list)
+    phi_detected: bool = False
+    raw_text_chunks: list[str] = Field(default_factory=list)
 
 
 class RunCreateRequest(BaseModel):
@@ -58,8 +88,9 @@ class SchemaProfile(BaseModel):
     null_summary: dict           # {col: pct}
     duplicate_count: int
     memory_mb: float
-    fasta_sequences: list[dict] = Field(default_factory=list) # [{id, seq}]
-    pdf_chunks: list[str] = Field(default_factory=list)
+    fasta_sequences: list[dict] = Field(default_factory=list)  # [{id, seq}]
+    pdf_chunks: list[dict] = Field(default_factory=list)        # structured MedOCRResult.entities as dicts
+    pdf_ocr_result: Optional[MedOCRResult] = None               # full MedOCR output (set when PDF is present)
 
 
 class ProteinContext(BaseModel):
