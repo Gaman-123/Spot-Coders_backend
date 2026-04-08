@@ -21,6 +21,7 @@ OPTIONAL_INSIGHT_FIELDS = {
     "final_prescription_text",
     "report_status",
     "gnn_summary_json",
+    "debate_transcript",
 }
 
 

@@ -72,38 +72,36 @@ def build_chunks(profile: SchemaProfile) -> list[Document]:
     return chunks
 
 
-def embed_tool(profile: SchemaProfile) -> int:
+from services.embedding_service import get_embeddings_batch_async
+
+async def embed_tool(profile: SchemaProfile) -> int:
     """
     Embed all schema chunks into Supabase pgvector using
-    google-genai SDK directly (avoids v1beta API issues in
-    langchain-google-genai).
+    the robust embedding service (handles 429 quota errors).
     Returns count of vectors stored.
     """
     chunks = build_chunks(profile)
     texts = [c.page_content for c in chunks]
 
-    # Generate embeddings — gemini-embedding-001 with 768-dim output
-    # to match the vector(768) Supabase schema
-    client = google_genai.Client(api_key=settings.GOOGLE_API_KEY)
-    response = client.models.embed_content(
-        model="models/gemini-embedding-001",
-        contents=texts,
-        config=genai_types.EmbedContentConfig(
-            task_type="RETRIEVAL_DOCUMENT",
-            output_dimensionality=768
-        )
-    )
+    # Generate embeddings with robust batch handling
+    embeddings = await get_embeddings_batch_async(texts)
 
     # Build rows for Supabase insert
     rows = []
-    for chunk, emb in zip(chunks, response.embeddings):
+    for chunk, emb_values in zip(chunks, embeddings):
+        if emb_values is None:
+            continue
+            
         rows.append({
             "run_id": profile.run_id,
             "chunk_index": chunk.metadata["chunk_index"],
             "chunk_text": chunk.page_content,
             "metadata": chunk.metadata,
-            "embedding": emb.values
+            "embedding": emb_values
         })
+
+    if not rows:
+        return 0
 
     # Insert into Supabase documents table
     supabase = create_client(

@@ -22,7 +22,7 @@ async def run_embed_agent(
     t0 = time.monotonic()
 
     # Store vectors in Supabase pgvector
-    vector_count = embed_tool(profile)
+    vector_count = await embed_tool(profile)
 
     latency_ms = int((time.monotonic() - t0) * 1000)
 

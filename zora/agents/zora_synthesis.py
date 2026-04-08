@@ -61,10 +61,11 @@ def _call_llm(
     expected_output: str,
     temperature: float = 0.3,
 ) -> str:
-    """Single-agent LLM call with Gemini → Groq fallback."""
+    """Single-agent LLM call with Groq primary (higher quota) → Gemini fallback."""
+    # PRIMARY is Groq to avoid Gemini 429 quota blocks
     candidates = [
-        LLM(model="gemini/gemini-2.0-flash", api_key=settings.GOOGLE_API_KEY, temperature=temperature),
         LLM(model="groq/llama-3.3-70b-versatile", api_key=settings.GROQ_API_KEY, temperature=temperature),
+        LLM(model="gemini/gemini-2.0-flash", api_key=settings.GOOGLE_API_KEY, temperature=temperature),
     ]
     last_exc = None
     for llm in candidates:
@@ -77,25 +78,25 @@ def _call_llm(
             return str(Crew(agents=[agent], tasks=[task],
                             process=Process.sequential, verbose=False).kickoff())
         except Exception as e:
+            if "429" in str(e).lower():
+                log.warning(f"LLM 429 for {llm.model}. Attempting next candidate...")
             last_exc = e
             continue
-    raise RuntimeError(f"LLM call failed for role '{role}': {last_exc}")
+    raise RuntimeError(f"LLM call failed for role '{role}' after all candidates: {last_exc}")
 
 
 # ── RAG citations ─────────────────────────────────────────────────────────────
 
-def _retrieve_rag_citations(run_id: str, query: str, k: int = 5) -> list[dict]:
+from services.embedding_service import get_embedding_async
+
+async def _retrieve_rag_citations(run_id: str, query: str, k: int = 5) -> list[dict]:
+    """Retrieve RAG citations using the robust embedding service."""
     try:
-        client = google_genai.Client(api_key=settings.GOOGLE_API_KEY)
-        resp   = client.models.embed_content(
-            model="models/gemini-embedding-001",
-            contents=[query],
-            config=genai_types.EmbedContentConfig(
-                task_type="RETRIEVAL_QUERY",
-                output_dimensionality=768,
-            ),
-        )
-        vec     = resp.embeddings[0].values
+        vec = await get_embedding_async(query)
+        if not vec:
+            log.warning("Could not obtain embedding for RAG query. Proceeding without context.")
+            return []
+            
         supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_KEY)
         result  = supabase.rpc("match_documents", {
             "query_embedding": vec,
@@ -106,7 +107,8 @@ def _retrieve_rag_citations(run_id: str, query: str, k: int = 5) -> list[dict]:
             {"chunk_text": r["chunk_text"], "similarity": round(r["similarity"], 4)}
             for r in (result.data or [])
         ]
-    except Exception:
+    except Exception as e:
+        log.error(f"RAG citation retrieval failed: {e}")
         return []
 
 
@@ -330,7 +332,7 @@ async def run_synthesis_agent(
         f"Healthcare dataset {profile.filename} with target {profile.target_candidate}. "
         f"Columns: {', '.join(profile.numeric_columns[:5])}."
     )
-    rag_citations = _retrieve_rag_citations(run_id, rag_query, k=5)
+    rag_citations = await _retrieve_rag_citations(run_id, rag_query, k=5)
     rag_context   = "\n".join(c["chunk_text"] for c in rag_citations[:3])
 
     # ── Round 1: Announce Clinical Strategist starting ───────────────────────

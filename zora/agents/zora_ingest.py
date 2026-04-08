@@ -52,19 +52,22 @@ def _make_crew(llm: LLM, profile_json: str, target_hint: str | None) -> Crew:
 
 
 def _kickoff_with_fallback(profile_json: str, target_hint: str | None) -> str:
-    """Try Gemini 2.0 Flash first; fall back to Groq llama-3.3-70b on any error."""
+    """Try Groq first (higher quota); fall back to Gemini on error."""
+    # PRIMARY is Groq to stay within free-tier quota limits
     candidates = [
-        LLM(model="gemini/gemini-2.0-flash", api_key=settings.GOOGLE_API_KEY, temperature=0.1),
         LLM(model="groq/llama-3.3-70b-versatile", api_key=settings.GROQ_API_KEY, temperature=0.1),
+        LLM(model="gemini/gemini-2.0-flash", api_key=settings.GOOGLE_API_KEY, temperature=0.1),
     ]
     last_exc: Exception | None = None
     for llm in candidates:
         try:
             return str(_make_crew(llm, profile_json, target_hint).kickoff())
         except Exception as e:
+            if "429" in str(e).lower():
+                print(f"Ingest LLM 429 for {llm.model}. Attempting next...")
             last_exc = e
             continue
-    raise RuntimeError(f"All LLMs failed. Last error: {last_exc}")
+    raise RuntimeError(f"All Ingest LLMs failed. Last error: {last_exc}")
 
 
 async def run_ingest_agent(

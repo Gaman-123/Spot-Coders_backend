@@ -16,24 +16,18 @@ MAX_CRITIC_RETRIES = 3
 PASS_THRESHOLD = 7
 
 
-# ── RAG RETRIEVAL ─────────────────────────────────────────────────────────────
+from services.embedding_service import get_embedding_async
 
-def _retrieve_schema_context(run_id: str, query: str, k: int = 3) -> str:
+async def _retrieve_schema_context(run_id: str, query: str, k: int = 3) -> str:
     """
-    Embed the query using gemini-embedding-001 and retrieve top-k
+    Embed the query using the robust embedding service and retrieve top-k
     schema chunks for this run_id from Supabase pgvector.
     Returns concatenated chunk_text as context string.
     """
-    client = google_genai.Client(api_key=settings.GOOGLE_API_KEY)
-    response = client.models.embed_content(
-        model="models/gemini-embedding-001",
-        contents=[query],
-        config=genai_types.EmbedContentConfig(
-            task_type="RETRIEVAL_QUERY",
-            output_dimensionality=768
-        )
-    )
-    query_vector = response.embeddings[0].values
+    query_vector = await get_embedding_async(query)
+    if not query_vector:
+        log.warning("Embedding failed for schema context retrieval. Operating without RAG context.")
+        return ""
 
     supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_KEY)
     result = supabase.rpc("match_documents", {
@@ -200,7 +194,7 @@ async def run_clean_agent(
             f"Dataset {profile.filename} schema profile: "
             f"columns, null rates, data types, target column"
         )
-        schema_context = _retrieve_schema_context(run_id, rag_query, k=3)
+        schema_context = await _retrieve_schema_context(run_id, rag_query, k=3)
 
         # ── Step 3: Build critic prompt ───────────────────────────────────────
         await sse_manager.publish(run_id, {

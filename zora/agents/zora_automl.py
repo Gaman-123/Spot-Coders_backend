@@ -31,25 +31,22 @@ MAX_CRITIC_RETRIES   = 2
 
 # ── RAG cosine grounding check ────────────────────────────────────────────────
 
-def _embed_text(text: str) -> list[float]:
-    client = google_genai.Client(api_key=settings.GOOGLE_API_KEY)
-    resp = client.models.embed_content(
-        model="models/gemini-embedding-001",
-        contents=[text],
-        config=genai_types.EmbedContentConfig(
-            task_type="RETRIEVAL_QUERY",
-            output_dimensionality=768
-        )
-    )
-    return resp.embeddings[0].values
+from services.embedding_service import get_embedding_async
+
+async def _embed_text(text: str) -> list[float] | None:
+    return await get_embedding_async(text)
 
 
-def _rag_cosine_check(claim: str, run_id: str) -> tuple[bool, float]:
+async def _rag_cosine_check(claim: str, run_id: str) -> tuple[bool, float, bool]:
     """
-    Embed the claim, query pgvector, return (passed, best_cosine_score).
+    Embed the claim, query pgvector, return (passed, best_cosine_score, error_occurred).
     PASS if best similarity ≥ RAG_COSINE_THRESHOLD.
+    If embedding fails, returns (True, 0.0, True) to prevent pipeline hang.
     """
-    query_vec = _embed_text(claim)
+    query_vec = await _embed_text(claim)
+    if not query_vec:
+        return True, 0.0, True  # Soft-fail: Pass with error flag
+        
     supabase  = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_KEY)
     result = supabase.rpc("match_documents", {
         "query_embedding": query_vec,
@@ -58,10 +55,10 @@ def _rag_cosine_check(claim: str, run_id: str) -> tuple[bool, float]:
     }).execute()
 
     if not result.data:
-        return False, 0.0
+        return False, 0.0, False
 
     best_score = float(result.data[0].get("similarity", 0.0))
-    return best_score >= RAG_COSINE_THRESHOLD, round(best_score, 4)
+    return best_score >= RAG_COSINE_THRESHOLD, round(best_score, 4), False
 
 
 def _build_grounding_claim(automl_result: dict, alphafold_result: dict) -> str:
@@ -182,9 +179,10 @@ async def run_automl_agent(
     claim = _build_grounding_claim(automl_result, alphafold_result)
     passed_gate = False
     cosine_score = 0.0
+    embedding_failed = False
 
     for attempt in range(1, MAX_CRITIC_RETRIES + 2):
-        passed_gate, cosine_score = _rag_cosine_check(claim, run_id)
+        passed_gate, cosine_score, embedding_failed = await _rag_cosine_check(claim, run_id)
         if passed_gate:
             break
         if attempt <= MAX_CRITIC_RETRIES:
@@ -201,7 +199,7 @@ async def run_automl_agent(
         "output_summary": (
             f"Gate 1: {'PASS' if passed_gate else 'WARN'} "
             f"(cosine={cosine_score}, threshold={RAG_COSINE_THRESHOLD}). "
-            f"{'Claims grounded in schema context.' if passed_gate else 'Low similarity — proceeding with caution.'}"
+            f"{'Embedding quota hit — bypass active.' if embedding_failed else 'Claims grounded.' if passed_gate else 'Low similarity.'}"
         ),
         "data": {
             "cosine_score": cosine_score,

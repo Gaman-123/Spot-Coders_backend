@@ -47,20 +47,10 @@ async def query_agent(request: QueryRequest):
         target_run_id = runs[0]["run_id"] # Fallback
 
     # 2. Embed the user's query
-    client = google_genai.Client(api_key=settings.GOOGLE_API_KEY)
-    
-    try:
-        emb_res = client.models.embed_content(
-            model="models/gemini-embedding-001",
-            contents=[request.query],
-            config=genai_types.EmbedContentConfig(
-                task_type="RETRIEVAL_QUERY",
-                output_dimensionality=768
-            )
-        )
-        query_embedding = emb_res.embeddings[0].values
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to embed query: {e}")
+    from services.embedding_service import get_embedding_async
+    query_embedding = await get_embedding_async(request.query)
+    if not query_embedding:
+        raise HTTPException(status_code=429, detail="Embedding API quota exceeded. Please try again later.")
 
     # 3. Fetch documents for this run
     docs_res = supabase.table("documents").select("*").eq("run_id", target_run_id).execute()
@@ -89,8 +79,12 @@ async def query_agent(request: QueryRequest):
             top_chunksText.append(f"Document Chunk: {doc.get('chunk_text', '')}")
             
         top_chunks_text = "\n\n".join(top_chunksText)
+        if not top_chunks_text:
+            top_chunks_text = "No document chunks available for this patient."
 
-    # 5. Query Gemini 2.5 Flash
+    # 5. Query Clinical Hub Agent (Groq primary)
+    from crewai import Agent, Task, Crew, Process, LLM
+    
     system_prompt = (
         "You are a clinical AI assistant for a physician dashboard explicitly focused on ONE patient's data.\n"
         "Use the provided clinical dataset contexts to answer the user's question accurately.\n"
@@ -98,14 +92,32 @@ async def query_agent(request: QueryRequest):
         f"--- CLINICAL CONTEXT START ---\n{top_chunks_text}\n--- CLINICAL CONTEXT END ---"
     )
 
-    try:
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=system_prompt + f"\n\nQuestion: {request.query}"
-        )
-        answer_text = response.text
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate answer: {e}")
+    candidates = [
+        LLM(model="groq/llama-3.3-70b-versatile", api_key=settings.GROQ_API_KEY, temperature=0.2),
+        LLM(model="gemini/gemini-2.0-flash", api_key=settings.GOOGLE_API_KEY, temperature=0.2),
+    ]
+    
+    answer_text = None
+    last_err = None
+    for llm in candidates:
+        try:
+            agent = Agent(
+                role="Clinical Informatics Specialist",
+                goal="Provide concise, evidence-based answers to physician queries.",
+                backstory="Expert in interpreting clinical data chunks retrieved via RAG.",
+                llm=llm, verbose=False, allow_delegation=False, max_iter=1
+            )
+            task = Task(description=f"{system_prompt}\n\nQuestion: {request.query}", 
+                        expected_output="Direct answer to the clinical question.", 
+                        agent=agent)
+            answer_text = str(Crew(agents=[agent], tasks=[task]).kickoff())
+            break
+        except Exception as e:
+            last_err = e
+            continue
+            
+    if not answer_text:
+        raise HTTPException(status_code=500, detail=f"Failed to generate answer after model rotation: {last_err}")
 
     return {
         "answer": answer_text,
