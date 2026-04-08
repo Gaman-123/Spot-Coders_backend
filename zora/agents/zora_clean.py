@@ -5,6 +5,7 @@ from google import genai as google_genai
 from google.genai import types as genai_types
 from supabase import create_client
 from tools.clean_tool import clean_tool
+from tools.llm_clean_tool import llm_clean_tool
 from services.supabase_service import update_run_status
 from utils.sse_manager import sse_manager
 from utils.config import settings
@@ -118,7 +119,7 @@ async def run_clean_agent(
         "type": "agent_update",
         "agent": "zora_clean",
         "status": "running",
-        "output_summary": "Cleaning dataset: null impute + dedup + outlier IQR...",
+        "output_summary": "Requesting LLM-guided cleaning script from Groq LLaMA 3.3...",
         "timestamp": datetime.now(timezone.utc).isoformat()
     })
 
@@ -127,14 +128,72 @@ async def run_clean_agent(
     clean_report: CleanReport | None = None
     critic_result: dict = {}
 
+    cleaning_method = "static"  # default
+    generated_script = ""        # populated if LLM path succeeds
+
     for attempt in range(1, MAX_CRITIC_RETRIES + 1):
 
-        # ── Step 1: Run clean_tool ────────────────────────────────────────────
-        clean_report = clean_tool(
-            run_id=run_id,
-            profile=profile,
-            feedback_ctx=feedback_ctx
-        )
+        # ── Step 1: Try LLM-Guided first, fall back to static ────────────
+        if attempt == 1 or (attempt > 1 and cleaning_method == "llm"):
+            # On first attempt: try LLM. On retries: if LLM worked before, retry LLM with feedback
+            try:
+                await sse_manager.publish(run_id, {
+                    "type": "agent_update",
+                    "agent": "zora_clean",
+                    "status": "running",
+                    "output_summary": f"[Attempt {attempt}] Groq LLaMA writing custom pandas script from 10-row sample...",
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                })
+                clean_report, generated_script = llm_clean_tool(
+                    run_id=run_id,
+                    profile=profile,
+                    feedback_ctx=feedback_ctx,
+                )
+                cleaning_method = "llm"
+                await sse_manager.publish(run_id, {
+                    "type": "agent_update",
+                    "agent": "zora_clean",
+                    "status": "running",
+                    "output_summary": (
+                        f"[LLM] Script executed. "
+                        f"{clean_report.rows_before}→{clean_report.rows_after} rows. "
+                        f"Nulls imputed: {sum(clean_report.nulls_imputed.values())}. "
+                        f"Script preview: {generated_script[:160].strip()!r}"
+                    ),
+                    "data": {
+                        "cleaning_method": "llm_groq",
+                        "script_preview": generated_script[:400],
+                        "rows_before": clean_report.rows_before,
+                        "rows_after": clean_report.rows_after,
+                    },
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                })
+            except Exception as llm_err:
+                # LLM path failed — fall back to static
+                cleaning_method = "static"
+                generated_script = ""
+                await sse_manager.publish(run_id, {
+                    "type": "agent_update",
+                    "agent": "zora_clean",
+                    "status": "running",
+                    "output_summary": (
+                        f"LLM-guided cleaning failed ({type(llm_err).__name__}: {str(llm_err)[:120]}). "
+                        "Falling back to static IQR+median pipeline."
+                    ),
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                })
+                clean_report = clean_tool(
+                    run_id=run_id,
+                    profile=profile,
+                    feedback_ctx=feedback_ctx,
+                )
+        else:
+            # If static was used on attempt 1, keep using static on retries
+            clean_report = clean_tool(
+                run_id=run_id,
+                profile=profile,
+                feedback_ctx=feedback_ctx,
+            )
 
         # ── Step 2: RAG — retrieve schema context for grounding ───────────────
         rag_query = (
@@ -159,8 +218,16 @@ async def run_clean_agent(
             if strategy != "none"
         }
 
+        # Append LLM script to critic prompt if available
+        script_block = (
+            f"\n\nLLM-GENERATED CLEANING SCRIPT (evaluate if logic is medically sound):\n"
+            f"```python\n{generated_script[:600]}\n```\n"
+            if generated_script else ""
+        )
+
         critic_prompt = f"""
 You are evaluating a data cleaning operation. Score it 0-10 (>=7 = PASS).
+Cleaning method used: {cleaning_method.upper()} {'(LLM wrote a custom pandas script)' if cleaning_method == 'llm' else '(static IQR+median pipeline)'}
 
 SCHEMA CONTEXT (from RAG):
 {schema_context or 'No context available.'}
@@ -172,21 +239,21 @@ ACTIONS TAKEN:
 - Imputation method used: {json.dumps(active_imputation)} (only cols that had nulls)
 - Invalid values converted to null: {json.dumps(clean_report.invalid_values_converted)}
 - Missingness flags added: {json.dumps(clean_report.missingness_flags_added)}
-- Outliers removed via 1.5x IQR rule: {json.dumps(clean_report.outliers_removed)}
+- Outliers removed via IQR rule: {json.dumps(clean_report.outliers_removed)}
 - Rows: {clean_report.rows_before} → {clean_report.rows_after}
 - Target column skipped (correct): {profile.target_candidate}
 - Sample of cleaned data (first row): {json.dumps(clean_report.sample_5_rows[0]) if clean_report.sample_5_rows else 'N/A'}
-- Columns with NO nulls were NOT imputed (strategy "none" = no action taken)
-
+{script_block if cleaning_method == 'llm' else ''}
 {f'PRIOR FEEDBACK (retry {attempt}): {feedback_ctx}' if feedback_ctx else ''}
 
 Score criteria:
-1. Median imputation for numeric null columns = good (score up)
-2. Mode imputation for categorical null columns = good (score up)
-3. Deduplication = always correct (score up)
-4. Converting implausible vitals/labs to null with flags = good (score up)
-5. Dropping outliers via IQR instead of just capping = good for strict statistical integrity
-5. Target column untouched = correct (score up)
+1. Median/LLM imputation for numeric null columns = good
+2. Mode/LLM imputation for categorical null columns = good
+3. Deduplication = always correct
+4. Converting implausible vitals/labs to null with flags = good
+5. Dropping outliers via IQR or domain-specific logic = good
+6. LLM script logic medically sound and not hallucinated = critical
+7. Target column untouched = correct
 
 Return ONLY valid JSON: {{"score": <int 0-10>, "passed": <bool>, "feedback": <str>}}
 """.strip()
@@ -244,24 +311,23 @@ Return ONLY valid JSON: {{"score": <int 0-10>, "passed": <bool>, "feedback": <st
         "status": "completed",
         "latency_ms": latency_ms,
         "output_summary": (
-            f"{clean_report.rows_before}→{clean_report.rows_after} rows. "
-            f"{clean_report.dupes_removed + clean_report.same_visit_dupes_removed} dupes removed. "
+            f"[{cleaning_method.upper()}] {clean_report.rows_before}→{clean_report.rows_after} rows. "
+            f"{clean_report.dupes_removed + clean_report.same_visit_dupes_removed} dupes. "
             f"{sum(clean_report.nulls_imputed.values())} nulls imputed. "
-            f"{sum(clean_report.invalid_values_converted.values())} invalid values nulled. "
             f"{sum(clean_report.outliers_removed.values())} IQR outliers removed. "
             f"Quality score: {clean_report.quality_score}/10."
         ),
         "data": {
-            "rows_before": clean_report.rows_before,
-            "rows_after": clean_report.rows_after,
-            "dupes_removed": clean_report.dupes_removed,
-            "same_visit_dupes_removed": clean_report.same_visit_dupes_removed,
-            "nulls_imputed": clean_report.nulls_imputed,
+            "rows_before":            clean_report.rows_before,
+            "rows_after":             clean_report.rows_after,
+            "dupes_removed":          clean_report.dupes_removed,
+            "nulls_imputed":          clean_report.nulls_imputed,
             "invalid_values_converted": clean_report.invalid_values_converted,
-            "capped_extremes": clean_report.capped_extremes,
             "missingness_flags_added": clean_report.missingness_flags_added,
-            "quality_score": clean_report.quality_score,
-            "passed_critic": clean_report.passed_critic
+            "quality_score":          clean_report.quality_score,
+            "passed_critic":          clean_report.passed_critic,
+            "cleaning_method":        cleaning_method,
+            "script_preview":         generated_script[:300] if generated_script else None,
         },
         "timestamp": datetime.now(timezone.utc).isoformat()
     })
