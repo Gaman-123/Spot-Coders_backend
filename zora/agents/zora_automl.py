@@ -16,6 +16,7 @@ from google.genai import types as genai_types
 from supabase import create_client
 
 from tools.automl_tool import automl_tool
+from tools.tabpfn_tool import tabpfn_tool, is_tabpfn_suitable
 from tools.alphafold_tool import alphafold_tool
 from tools.misfold_tool import resolve_protein_context_for_run
 from services.supabase_service import update_run_status
@@ -96,16 +97,62 @@ async def run_automl_agent(
         "timestamp": datetime.now(timezone.utc).isoformat()
     })
 
-    # ── Step 1: AutoML ────────────────────────────────────────────────────────
+    # ── Step 1: AutoML — TabPFN primary / PyCaret fallback ────────────────────
     target_col = profile.target_candidate or "readmission_30day"
-    automl_result = automl_tool(run_id, target_col)
+
+    # Quick suitability check (reads only header — fast)
+    import pandas as pd, os
+    from tools.tabpfn_tool import _get_modeling_input_path as _tabpfn_path
+    try:
+        _check_df = pd.read_csv(_tabpfn_path(run_id), nrows=5)
+        _target_norm = profile.target_candidate
+        suitable, reason = is_tabpfn_suitable(
+            pd.read_csv(_tabpfn_path(run_id)), _target_norm or "target"
+        )
+    except Exception:
+        suitable, reason = False, "Could not load dataset for suitability check."
+
+    if suitable:
+        await sse_manager.publish(run_id, {
+            "type": "agent_update",
+            "agent": "zora_automl",
+            "status": "running",
+            "output_summary": f"TabPFN selected (SOTA). {reason} Running zero-shot inference...",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+        try:
+            automl_result = tabpfn_tool(run_id, target_col)
+            engine_used = "TabPFN"
+        except Exception as tabpfn_err:
+            await sse_manager.publish(run_id, {
+                "type": "agent_update",
+                "agent": "zora_automl",
+                "status": "running",
+                "output_summary": (
+                    f"TabPFN failed ({type(tabpfn_err).__name__}: {str(tabpfn_err)[:100]}). "
+                    "Falling back to PyCaret compare_models..."
+                ),
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
+            automl_result = automl_tool(run_id, target_col)
+            engine_used = "PyCaret (TabPFN fallback)"
+    else:
+        await sse_manager.publish(run_id, {
+            "type": "agent_update",
+            "agent": "zora_automl",
+            "status": "running",
+            "output_summary": f"PyCaret selected. {reason}",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+        automl_result = automl_tool(run_id, target_col)
+        engine_used = "PyCaret"
 
     await sse_manager.publish(run_id, {
         "type": "agent_update",
         "agent": "zora_automl",
         "status": "running",
         "output_summary": (
-            f"Best model: {automl_result['model_name']} "
+            f"[{engine_used}] Best model: {automl_result['model_name']} "
             f"(AUC={automl_result['metrics']['auc']}, "
             f"Acc={automl_result['metrics']['accuracy']}). "
             f"Running AlphaFold EBI API + BioPython..."
@@ -188,11 +235,12 @@ async def run_automl_agent(
         "status": "completed",
         "latency_ms": latency_ms,
         "output_summary": (
-            f"AutoML: {automl_result['model_name']} AUC={automl_result['metrics']['auc']}. "
+            f"[{engine_used}] {automl_result['model_name']} AUC={automl_result['metrics']['auc']}. "
             f"AlphaFold: {protein_context.protein_name} stability={alphafold_result['stability_score']}. "
             f"Gate 1: {'PASS' if passed_gate else 'WARN'} cosine={cosine_score}."
         ),
         "data": {
+            "engine":          engine_used,
             "model_name":      automl_result["model_name"],
             "auc":             automl_result["metrics"]["auc"],
             "accuracy":        automl_result["metrics"]["accuracy"],
@@ -206,7 +254,7 @@ async def run_automl_agent(
     })
 
     return {
-        "automl":     automl_result,
+        "automl":     {**automl_result, "engine_used": engine_used},
         "alphafold":  alphafold_result,
         "protein_context": protein_context.model_dump(exclude_none=True),
         "gate1": {
