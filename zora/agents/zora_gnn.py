@@ -192,9 +192,75 @@ def _build_node_features(
 
 # ── STRING DB edge fetcher ────────────────────────────────────────────────────
 
-def _fetch_string_edges(proteins: list[str]) -> list[tuple[str, str, float]]:
-    """Query STRING DB for PPI edges. Returns [(protein_a, protein_b, confidence)]."""
+def _get_ensp_mapping(proteins: list[str]) -> dict[str, str]:
+    """Map Gene Names to STRING ENSP IDs using API (fast/cached)."""
+    mapping = {}
+    try:
+        url = "https://string-db.org/api/json/get_string_ids"
+        params = {"identifiers": "\r".join(proteins), "species": 9606}
+        resp = requests.post(url, data=params, timeout=8)
+        if resp.status_code == 200:
+            for item in resp.json():
+                mapping[item["preferredName"]] = item["stringId"]
+    except Exception:
+        pass
+    return mapping
+
+
+def _fetch_local_string_edges(proteins: list[str]) -> list[tuple[str, str, float]]:
+    """Scan local protein_links.txt.gz for edges using grep (high speed)."""
+    import gzip, subprocess, os
+    local_gz = "data/networks/protein_links.txt.gz"
+    if not os.path.exists(local_gz):
+        return []
+
+    ensp_map = _get_ensp_mapping(proteins)
+    if not ensp_map:
+        return []
+
+    ensp_ids = list(ensp_map.values())
+    ensp_to_name = {v: k for k, v in ensp_map.items()}
+    
     edges: list[tuple[str, str, float]] = []
+    
+    # Use grep to fast-select lines matching ANY of our proteins
+    # Pattern: "ENSP1|ENSP2|ENSP3"
+    pattern = "|".join(id.replace("9606.", "") for id in ensp_ids)
+    
+    try:
+        # We use zgrep (or python gzip + grep) to find relevant lines
+        # On Windows, we'll use python to stream and filter for reliability
+        with gzip.open(local_gz, "rt") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 3: continue
+                p1, p2, score = parts[0], parts[1], parts[2]
+                
+                # Check if BOTH proteins are in our set (inter-set edges)
+                # Or if ONE is in our set (expanded network)
+                if p1 in ensp_ids and p2 in ensp_ids:
+                    edges.append((
+                        ensp_to_name[p1],
+                        ensp_to_name[p2],
+                        float(score) / 1000.0
+                    ))
+    except Exception as exc:
+        print(f"[gnn] Local STRING scan error: {exc}")
+        
+    return edges
+
+
+def _fetch_string_edges(proteins: list[str]) -> list[tuple[str, str, float]]:
+    """Hybrid STRING DB fetcher: Local GZ (Primary) -> API (Fallback)."""
+    # 1. Try local deep network first
+    edges = _fetch_local_string_edges(proteins)
+    if edges:
+        print(f"[gnn] Loaded {len(edges)} edges from local STRING-DB dataset.")
+        return edges
+
+    # 2. API Fallback (constrained top-k)
+    print("[gnn] Local dataset missing or failed. Falling back to STRING-DB API...")
+    edges = []
     try:
         url = "https://string-db.org/api/json/network"
         params = {

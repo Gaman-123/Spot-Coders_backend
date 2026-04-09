@@ -178,6 +178,15 @@ class FeatureEngineeringReport(BaseModel):
     output_file: str = "featured.csv"
 
 
+class GenomicsReport(BaseModel):
+    run_id: str
+    source_tar: str
+    sample_count: int = 0
+    extracted_metadata: list[dict] = Field(default_factory=list)
+    genomic_disease_tags: list[str] = Field(default_factory=list)
+    status: str = "unprocessed"
+
+
 class PatientContactCreateRequest(BaseModel):
     run_id: str
     patient_name: str

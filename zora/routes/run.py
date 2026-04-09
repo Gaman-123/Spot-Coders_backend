@@ -14,6 +14,7 @@ from agents.zora_feature import run_feature_agent
 from agents.zora_automl import run_automl_agent
 from agents.zora_gnn import run_gnn_agent
 from agents.zora_misfold import run_misfold_agent
+from agents.zora_genomics import run_genomics_agent
 from agents.zora_synthesis import run_synthesis_agent
 from agents.zora_narrator import run_narrator_agent
 from services.de_connector import fetch_latest_dataset
@@ -93,6 +94,14 @@ async def _run_pipeline(
                 log.info("misfold_complete",
                          stuck_score=misfold_summary.stuck_score,
                          energy_state=misfold_summary.energy_state)
+
+        # S4.2 — Genomics & Multi-Omic Linking (New Stage)
+        log.info("starting_genomics")
+        genomics_result = await run_genomics_agent(
+            run_id=run_id,
+            automl_result=s4_result
+        )
+        log.info("genomics_complete", status=genomics_result.status)
 
         # S4.5 — GNN Network Analysis (New Stage)
         log.info("starting_gnn")

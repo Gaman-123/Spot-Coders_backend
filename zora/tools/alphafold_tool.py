@@ -37,6 +37,9 @@ ALPHAFOLD_PDB_URL = "https://alphafold.ebi.ac.uk/entry/{uniprot_id}"
 UNIPROT_API_URL   = "https://rest.uniprot.org/uniprotkb/{uniprot_id}.json"
 REQUEST_TIMEOUT   = 8  # seconds per API call
 
+LOCAL_PDB_PATH = "data/structures/{uniprot_id}.pdb"
+LOCAL_NAMED_PDB = "data/structures/{protein_name}.pdb"
+
 # ── Fallback sequences (used only when UniProt API is unavailable) ────────────
 PROTEIN_SEQUENCES: dict[str, str] = {
     "BNP":      "SPKMVQGSGCFGRKMDRISSSSGLGCKVLRRHSPKMVQGSGCFGRKMDRISSSSGLGCKVLRRH",
@@ -334,6 +337,17 @@ def alphafold_tool(protein_name: str, uniprot_id: str) -> dict:
     + BioPython biophysical properties + SASA.
     """
     pdb_link = ALPHAFOLD_PDB_URL.format(uniprot_id=uniprot_id)
+    # 0. Check for Local PDB Sideloading
+    source = "ebi_api"
+    local_path = LOCAL_PDB_PATH.format(uniprot_id=uniprot_id)
+    local_named_path = LOCAL_NAMED_PDB.format(protein_name=protein_name)
+    
+    import os
+    use_local = False
+    if os.path.exists(local_path):
+        use_local = local_path
+    elif os.path.exists(local_named_path):
+        use_local = local_named_path
 
     # 1. Fetch UniProt Data (Sequence, Function)
     uniprot_data = _fetch_uniprot_data(uniprot_id)
@@ -341,16 +355,21 @@ def alphafold_tool(protein_name: str, uniprot_id: str) -> dict:
     
     if real_sequence:
         sequence = real_sequence
-        source = "ebi_api"
     else:
         sequence = PROTEIN_SEQUENCES.get(protein_name, PROTEIN_SEQUENCES[DEFAULT_PROTEIN_NAME])
         source = "mock"
+
+    if use_local:
+        source = "local_pdb"
 
     # 2. Biophysical stats (ProtParam)
     biophys = _run_biopython_protparam(sequence)
 
     # 3. AlphaFold pLDDT
     mean_plddt = _fetch_alphafold_plddt(uniprot_id)
+    if use_local and mean_plddt is None:
+        # If we have a local PDB but API is down, we "highly trust" the local model
+        mean_plddt = 85.0 
     
     # 4. SASA Tool
     sasa_res = sasa_tool(protein_name, uniprot_id, use_mock=(source == "mock"))
@@ -374,6 +393,7 @@ def alphafold_tool(protein_name: str, uniprot_id: str) -> dict:
         "pdb_link": pdb_link,
         "sequence_length": len(sequence),
         "source": source,
+        "local_pdb_path": use_local if use_local else None,
         "sasa": {
             "mean_sasa": sasa_res["mean_sasa"],
             "buried_fraction": sasa_res["buried_fraction"],

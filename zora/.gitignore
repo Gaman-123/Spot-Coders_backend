@@ -37,3 +37,7 @@ logs.log
 uploads/
 outputs/
 .firecrawl/
+data/
+zora/data/
+zora/venv311/
+backend_log.txt
