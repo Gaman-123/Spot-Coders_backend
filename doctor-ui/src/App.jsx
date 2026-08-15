@@ -1,16 +1,16 @@
-import './App.css'
+import React from 'react';
+import Layout from './components/Layout';
+import './App.css';
 
 function App() {
   return (
-    <div className="app-container">
-      <div className="main-content">
-        <div className="page-wrapper">
-          <h1>Doctor Interface</h1>
-          <p>Initial application structure set up.</p>
-        </div>
+    <Layout>
+      <div>
+        <h1>Welcome to MedConnect</h1>
+        <p>Select an option from the sidebar to begin.</p>
       </div>
-    </div>
-  )
+    </Layout>
+  );
 }
 
-export default App
+export default App;
