@@ -1,0 +1,144 @@
+.appointments-view {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.calendar-container {
+  background-color: var(--bg-surface);
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  overflow: hidden;
+}
+
+.calendar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.5rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.calendar-nav {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.calendar-nav h2 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.nav-btn {
+  padding: 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nav-btn:hover {
+  background-color: var(--bg-main);
+}
+
+.calendar-views {
+  display: flex;
+  background-color: var(--bg-main);
+  border-radius: 6px;
+  padding: 0.25rem;
+}
+
+.view-btn {
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.view-btn.active {
+  background-color: var(--bg-surface);
+  color: var(--primary-color);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.schedule-grid {
+  display: flex;
+  min-height: 600px;
+}
+
+.time-column {
+  width: 100px;
+  border-right: 1px solid var(--border-color);
+  background-color: #f8f9fa;
+  padding-top: 50px;
+}
+
+.time-slot {
+  height: 60px;
+  padding: 0.5rem;
+  text-align: right;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  font-weight: 500;
+  position: relative;
+}
+
+.time-slot::after {
+  content: '';
+  position: absolute;
+  right: -1px;
+  top: 15px;
+  width: 8px;
+  border-top: 1px solid var(--border-color);
+}
+
+.day-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.day-header {
+  height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-color);
+  background-color: #f8f9fa;
+}
+
+.events-container {
+  flex: 1;
+  position: relative;
+  background-size: 100% 60px;
+  background-image: linear-gradient(to bottom, var(--border-color) 1px, transparent 1px);
+}
+
+.event-card {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  border-radius: 6px;
+  padding: 0.5rem 1rem;
+  border-left: 4px solid var(--primary-color);
+  background-color: var(--primary-light);
+  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+}
+
+.event-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--text-main);
+  margin-bottom: 0.25rem;
+}
+
+.event-time {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
