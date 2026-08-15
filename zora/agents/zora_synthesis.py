@@ -290,6 +290,7 @@ async def run_synthesis_agent(
     clean_report: CleanReport,
     s4_result: dict,
     gnn_result: list[dict] | None = None,
+    genomics_result: dict | None = None,
 ) -> dict:
 
     t0 = time.monotonic()
@@ -426,6 +427,7 @@ async def run_synthesis_agent(
         "doctor_review":        safety["doctor_review"],
         "protein_summary_json": misfold if misfold and misfold.get("enabled") else None,
         "gnn_summary_json":     gnn_result,
+        "genomics_report":      genomics_result,
         "debate_transcript":    debate_transcript,
     }
     inserted_row = insert_insight_row(insight_row)

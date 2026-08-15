@@ -19,9 +19,15 @@ CREATE TABLE IF NOT EXISTS public.gnn_results (
     protein text NOT NULL,
     shap_score float,
     centrality float,
+    eigenvector_cent float,
     gnn_embedding float[],
     is_hidden_hub boolean DEFAULT false,
-    created_at timestamptz DEFAULT now()
+    fusion_score float,
+    attention_weight float,
+    feature_dims text,
+    model_arch text,
+    created_at timestamptz DEFAULT now(),
+    UNIQUE(run_id, protein)
 );
 
 CREATE INDEX IF NOT EXISTS idx_gnn_results_run_id ON public.gnn_results (run_id);

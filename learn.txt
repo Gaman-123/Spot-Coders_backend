@@ -1,0 +1,111 @@
+ZORA ML: ARCHITECTURE & PIPELINE SUMMARY
+==========================================
+
+This document provides a technical overview of the Data Engineering (DE) systems and ML models powering Zora.
+
+--------------------------------------------------------------------------------
+1. DATA ENGINEERING (DE) PIPELINE
+--------------------------------------------------------------------------------
+Zora employs a "Strict Intelligence" pipeline that ensures data quality before modeling.
+
+A. Ingestion (Stage S1)
+- Files: zora/agents/zora_ingest.py, zora/tools/ingest_tool.py
+- Process: Handles multi-modal inputs (CSV clinical records, FASTA protein sequences, Medical PDFs).
+- DE Connector: (zora/services/de_connector.py) Can pull latest datasets automatically from the master data lake.
+
+B. Embedding & Vectorization (Stage S2)
+- Files: zora/agents/zora_embed.py, zora/services/embedding_service.py
+- Process: Converts clinical text and PDF metadata into 1536-dim vectors via Gemini 2.0.
+- Database: Persisted in Supabase via pgvector for RAG (Retrieval-Augmented Generation).
+
+C. Cleaning & Quality Control (Stage S3)
+- Files: zora/agents/zora_clean.py, zora/tools/clean_tool.py, zora/tools/llm_clean_tool.py
+- Process: Automated IQR outlier removal, null imputation (Median/Mode), and a 2-stage Critic loop.
+- Critic: Uses an LLM to verify if the cleaned data maintains clinical integrity.
+
+D. Feature Engineering (Stage S3.5)
+- Files: zora/agents/zora_feature.py, zora/tools/feature_engineering_tool.py
+- Process: Automatically derives clinical features (e.g., age buckets, risk ratios) and selects top candidates for ML.
+
+--------------------------------------------------------------------------------
+2. MACHINE LEARNING (ML) MODELS
+--------------------------------------------------------------------------------
+Zora uses a multi-modal approach combining Tabular ML, Biophysics, and GNNs.
+
+A. Tabular AutoML (Stage S4)
+- Files: zora/agents/zora_automl.py
+- Engine 1 (TabPFN): (zora/tools/tabpfn_tool.py) SOTA zero-shot transformer for tabular data. Selected if dataset size < 10,000 rows.
+- Engine 2 (PyCaret): (zora/tools/automl_tool.py) Fallback engine that compares 20+ models (XGBoost, CatBoost, LightGBM) to find the best AUC/Accuracy.
+
+B. Biophysics & Structural Analysis (Stage S4.1)
+- Files: zora/tools/alphafold_tool.py, zora/tools/misfold_tool.py, zora/tools/sasa_tool.py
+- Model: Connects to AlphaFold EBI API to fetch 3D structures and computes SASA (Solvent Accessible Surface Area) for stability scoring.
+
+C. Graph Neural Network (GNN) (Stage S4.5)
+- Files: zora/agents/zora_gnn.py
+- Model: FusionGAT (Cross-Modal Graph Attention Transformer).
+- Process: Fuses SHAP scores (ML signal) + AlphaFold biophysics + STRING DB protein-protein interactions.
+- Output: Identifies "Hidden Hubs"—proteins that are network-critical but would be missed by standard ML alone.
+
+--------------------------------------------------------------------------------
+3. EXECUTION & ORCHESTRATION
+--------------------------------------------------------------------------------
+Zora's agents run as an autonomous swarm, orchestrated by an asynchronous event loop.
+
+- Orchestrator: zora/routes/run.py (The _run_pipeline background task).
+- Communication: zora/utils/sse_manager.py (Uses Server-Sent Events to stream logs to the UI in real-time).
+- Synthesis & Narrator: zora/agents/zora_synthesis.py, zora/agents/zora_narrator.py.
+  - Final stage where all agent findings (ML + GNN + Biophysics) are synthesized into a clinical briefing and synthesized as audio.
+
+--------------------------------------------------------------------------------
+4. SUMMARY OF CORE FILES
+--------------------------------------------------------------------------------
+- UI Entry: zora-ui/index.html, zora-ui/app.js
+- API Entry: zora/main.py
+- Pipeline Logic: zora/routes/run.py
+- Agent Cluster: zora/agents/
+- Tool Cluster: zora/tools/
+- Schema/Models: zora/models/schemas.py
+- Database Layer: zora/services/supabase_service.py
+
+--------------------------------------------------------------------------------
+5. DEEP DIVE: HOW FEATURE ENGINEERING WORKS (FOR BEGINNERS)
+--------------------------------------------------------------------------------
+If you are new to Feature Engineering, think of it as "teaching the ML model 
+how to think." Models are good at numbers, but they don't know what a 
+"high blood pressure" or a "long hospital stay" is until we tell them.
+
+Here is exactly how Zora does it (File: zora/tools/feature_engineering_tool.py):
+
+A. Time Logic (Duration & Patterns)
+- Raw dates like "2026-04-09" are hard for models to use directly. 
+- We compute 'length_of_stay_computed' by subtracting dates. 
+- We extract 'admission_weekday' because hospitals might be more crowded 
+  on Mondays, which affects patient outcomes.
+
+B. Clinical Thresholds (Flags)
+- Instead of just looking at 'glucose_level' (e.g., 150), we create a 
+  'glucose_high_flag' (1 if ≥140, else 0). 
+- This highlights "danger zones" to the model so it doesn't have to 
+  find the thresholds itself.
+
+C. Binning (Smoothing the Data)
+- Age and BMI are "noisy." A 41-year-old and a 42-year-old are very similar. 
+- We use 'Binning' to group them into 'age_band' (e.g., "35_49"). 
+- This helps the model find general trends rather than getting distracted 
+  by tiny differences.
+
+D. Physiological Ratios
+- Medical experts look at 'Pulse Pressure' (Systolic minus Diastolic). 
+- We compute this manually so the model has the exact "medical signal" 
+  stored in a single column.
+
+E. Meaningful Rates
+- 'num_medications' alone is okay, but 'medication_burden_per_day' 
+  (meds divided by stay length) is MUCH smarter. 
+- It tells the model the "intensity" of a patient's treatment.
+
+F. Handling "Rare" Data (Bucketing)
+- If only 2 people in a 10,000-row file have a rare insurance provider, 
+  the model might "overfit" and think that insurance causes illness.
+- We group all rare categories (count < 3) into a single bucket called "other."

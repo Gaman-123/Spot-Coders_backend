@@ -10,6 +10,11 @@ const runIdDisplay   = document.getElementById('run-id-display');
 const backendStatus  = document.getElementById('backend-status');
 const pipelineStatus = document.getElementById('pipeline-status');
 
+// ── New Analysis Refs ───────────────────────────────────────────────────────
+const gnnSection     = document.getElementById('gnn-section');
+const gnnTbody       = document.getElementById('gnn-tbody');
+const automlSection  = document.getElementById('automl-section');
+
 // ── Backend health check ─────────────────────────────────────────────────────
 async function checkBackend() {
     try {
@@ -113,6 +118,15 @@ function connectSSE(runId) {
                 logToConsole(`${badge} [${agentName}] ${data.output_summary}`, data.status === 'failed' ? 'error' : 'agent');
                 pipelineStatus.textContent = agentName;
 
+                // Live rendering as agents complete
+                if (data.status === 'completed' && data.data) {
+                    if (data.agent === 'zora_automl') {
+                        renderAutoMLResults(data.data);
+                    } else if (data.agent === 'zora_gnn') {
+                        renderGNNResults(data.data);
+                    }
+                }
+
             } else if (data.type === 'error') {
                 logToConsole(`✗ ERROR: ${data.error_message}`, 'error');
                 pipelineStatus.textContent = 'FAILED';
@@ -150,7 +164,7 @@ async function fetchResults(runId) {
         const data = await res.json();
 
         resultsContent.innerHTML = `
-            <div class="result-box">
+            <div class="result-box" style="animation: fadeIn 0.5s ease;">
                 <p><strong>Status:</strong> ${data.status}</p>
                 <p><strong>Rows Processed:</strong> ${data.rows_count ?? '—'}</p>
                 <p><strong>Columns:</strong> ${data.cols_count ?? '—'}</p>
@@ -161,9 +175,58 @@ async function fetchResults(runId) {
                 </p>
             </div>
         `;
+
+        // If status is complete, also try to fetch GNN results specifically
+        if (data.status.includes('complete')) {
+            const gnnRes = await fetch(`${API_BASE}/api/run/${runId}/gnn`);
+            if (gnnRes.ok) {
+                const gnnData = await gnnRes.json();
+                if (gnnData && gnnData.length > 0) {
+                    renderGNNResults({ results: gnnData });
+                }
+            }
+        }
     } catch (err) {
         logToConsole(`Failed to fetch final results: ${err.message}`, 'error');
     }
+}
+
+// ── Rendering Helpers ─────────────────────────────────────────────────────────
+
+function renderAutoMLResults(data) {
+    automlSection.style.display = 'block';
+    document.getElementById('automl-engine').textContent = data.engine || 'AutoML';
+    document.getElementById('automl-best-model').textContent = data.model_name || '—';
+    document.getElementById('automl-auc').textContent = data.auc ? data.auc.toFixed(4) : '—';
+    document.getElementById('automl-acc').textContent = data.accuracy ? data.accuracy.toFixed(4) : '—';
+}
+
+function renderGNNResults(data) {
+    gnnSection.style.display = 'block';
+    const results = data.results || [];
+    
+    // Update summary metrics
+    const hubs = results.filter(r => r.is_hidden_hub).length;
+    document.getElementById('gnn-hubs-count').textContent = hubs;
+    if (data.attention_weight) {
+        document.getElementById('gnn-attn-weight').textContent = data.attention_weight.toFixed(3);
+    }
+
+    // Build table
+    gnnTbody.innerHTML = '';
+    results.slice(0, 10).forEach(row => {
+        const tr = document.createElement('tr');
+        const statusBadge = row.is_hidden_hub ? '<span class="hub-badge">HIDDEN HUB</span>' : '<span style="opacity:0.4">—</span>';
+        
+        tr.innerHTML = `
+            <td><strong>${row.protein}</strong></td>
+            <td>${row.shap_score.toFixed(3)}</td>
+            <td>${row.centrality.toFixed(3)}</td>
+            <td>${row.fusion_score.toFixed(3)}</td>
+            <td>${statusBadge}</td>
+        `;
+        gnnTbody.appendChild(tr);
+    });
 }
 
 // ── Run pipeline ──────────────────────────────────────────────────────────────
@@ -184,6 +247,12 @@ runBtn.addEventListener('click', async () => {
     runBtn.textContent = 'Initializing...';
     consoleOutput.innerHTML = '';
     resultsContent.innerHTML = '<div class="empty-state">⟳ Pipeline running — watch the logs...</div>';
+    
+    // Reset Analysis sections
+    gnnSection.style.display = 'none';
+    automlSection.style.display = 'none';
+    gnnTbody.innerHTML = '';
+
     logToConsole('Starting Zora Multi-Agent Intelligence Pipeline...', 'system');
 
     const formData = new FormData();

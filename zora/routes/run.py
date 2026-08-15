@@ -5,7 +5,7 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from pydantic import ValidationError
 from models.schemas import ProteinContext, RunCreateResponse, RunStatusResponse
 from services.supabase_service import (
-    create_run_record, get_run, update_run_status
+    create_run_record, get_run, update_run_status, fetch_rows
 )
 from agents.zora_ingest import run_ingest_agent
 from agents.zora_embed import run_embed_agent
@@ -119,6 +119,7 @@ async def _run_pipeline(
             clean_report=clean_report,
             s4_result=s4_result,
             gnn_result=gnn_result,
+            genomics_result=genomics_result.model_dump() if genomics_result else None,
         )
         log.info("synthesis_complete", insight_id=synthesis_result.get("insight_id"))
 
@@ -268,3 +269,10 @@ async def get_run_status(run_id: str):
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     return RunStatusResponse(**run)
+
+
+@router.get("/run/{run_id}/gnn", response_model=list[dict])
+async def get_run_gnn(run_id: str):
+    """Fetch all protein interaction network results for a run."""
+    results = fetch_rows("gnn_results", {"run_id": run_id}, order_by="fusion_score", ascending=False)
+    return results

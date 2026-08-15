@@ -79,14 +79,66 @@
             </div>
 
             <!-- Analysis Results -->
-            <div class="card glass results-card">
+            <div class="card glass results-card luxury-scroll">
                 <div class="card-header">
-                    <h2>Narration Output</h2>
+                    <h2>Intelligence Synthesis</h2>
                     <div id="pipeline-status" class="status-badge">Idle</div>
                 </div>
                 <div id="results-content" class="results-content">
                     <div class="empty-state">
-                        Results will appear here after analysis.
+                        <div class="dna-icon">🧬</div>
+                        <p>Results will appear here after analysis.</p>
+                        <span>Upload a dataset to activate the agent swarm.</span>
+                    </div>
+                </div>
+
+                <!-- Hidden GNN Section (Revealed on Completion) -->
+                <div id="gnn-section" class="analysis-section" style="display: none;">
+                    <div class="section-divider"></div>
+                    <div class="section-title">
+                        <h3>Interaction Network (GNN)</h3>
+                        <span class="badge gat">FusionGAT</span>
+                    </div>
+                    <div class="gnn-metrics">
+                        <div class="metric-tiny">Hubs: <span id="gnn-hubs-count">-</span></div>
+                        <div class="metric-tiny">Mean Attn: <span id="gnn-attn-weight">-</span></div>
+                    </div>
+                    <div class="table-container">
+                        <table id="gnn-table">
+                            <thead>
+                                <tr>
+                                    <th>Protein</th>
+                                    <th>SHAP</th>
+                                    <th>Centrality</th>
+                                    <th>Fusion Score</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="gnn-tbody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Hidden AutoML Section (Revealed on Completion) -->
+                <div id="automl-section" class="analysis-section" style="display: none;">
+                    <div class="section-divider"></div>
+                    <div class="section-title">
+                        <h3>Model Performance (AutoML)</h3>
+                        <span id="automl-engine" class="badge">Engine</span>
+                    </div>
+                    <div class="automl-grid">
+                        <div class="metric-box">
+                            <label>Best Model</label>
+                            <div id="automl-best-model">-</div>
+                        </div>
+                        <div class="metric-box">
+                            <label>AUC Score</label>
+                            <div id="automl-auc">-</div>
+                        </div>
+                        <div class="metric-box">
+                            <label>Accuracy</label>
+                            <div id="automl-acc">-</div>
+                        </div>
                     </div>
                 </div>
             </div>
